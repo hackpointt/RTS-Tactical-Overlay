@@ -1,0 +1,28 @@
+{
+  "hotkeys": [
+    {
+      "virtualKeyCode": 116,
+      "modifiers": [],
+      "action": "LoadProfile",
+      "description": "F5 - Load sample profile"
+    },
+    {
+      "virtualKeyCode": 117,
+      "modifiers": [],
+      "action": "StartExecution",
+      "description": "F6 - Start execution"
+    },
+    {
+      "virtualKeyCode": 118,
+      "modifiers": [],
+      "action": "PauseResume",
+      "description": "F7 - Pause/Resume execution"
+    },
+    {
+      "virtualKeyCode": 119,
+      "modifiers": [],
+      "action": "StopExecution",
+      "description": "F8 - Stop execution"
+    }
+  ]
+}
