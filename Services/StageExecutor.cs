@@ -20,6 +20,10 @@ public class StageExecutor : IStageExecutor
     private bool _isPaused;
     private double _pausedElapsedTime;
 
+    // Runtime duration adjustment support
+    private double _currentTargetDuration;
+    private readonly object _durationLock = new object();
+
     public bool IsRunning { get; private set; }
     public bool IsPaused => _isPaused;
     public int CurrentStageIndex => _currentStageIndex;
@@ -174,10 +178,15 @@ public class StageExecutor : IStageExecutor
 
     private async Task WaitForStageDuration(double durationSeconds, CancellationToken cancellationToken)
     {
-        var targetTime = TimeSpan.FromSeconds(durationSeconds);
+        // Initialize the target duration (can be adjusted at runtime via AdjustCurrentStageDuration)
+        lock (_durationLock)
+        {
+            _currentTargetDuration = durationSeconds;
+        }
+
         var frameInterval = TimeSpan.FromMilliseconds(16.67); // 60fps
 
-        while (_stageStopwatch.Elapsed < targetTime && !cancellationToken.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
             while (_isPaused && !cancellationToken.IsCancellationRequested)
             {
@@ -189,8 +198,23 @@ public class StageExecutor : IStageExecutor
                 break;
             }
 
+            // Read current target duration (may have been adjusted by drag)
+            double currentTarget;
+            lock (_durationLock)
+            {
+                currentTarget = _currentTargetDuration;
+            }
+
+            var targetTime = TimeSpan.FromSeconds(currentTarget);
+
+            // Check if we've reached the target
+            if (_stageStopwatch.Elapsed >= targetTime)
+            {
+                break;
+            }
+
             // Calculate progress (0.0 to 1.0)
-            double progress = Math.Min(1.0, _stageStopwatch.Elapsed.TotalSeconds / durationSeconds);
+            double progress = Math.Min(1.0, _stageStopwatch.Elapsed.TotalSeconds / currentTarget);
             ProgressUpdated?.Invoke(this, (_currentStageIndex, progress));
 
             var remaining = targetTime - _stageStopwatch.Elapsed;
@@ -200,6 +224,19 @@ public class StageExecutor : IStageExecutor
             {
                 await Task.Delay(delayTime, cancellationToken);
             }
+        }
+    }
+
+    /// <summary>
+    /// Adjusts the target duration of the currently executing stage at runtime.
+    /// </summary>
+    public void AdjustCurrentStageDuration(double newDurationSeconds)
+    {
+        if (!IsRunning) return;
+
+        lock (_durationLock)
+        {
+            _currentTargetDuration = Math.Max(0.1, newDurationSeconds);
         }
     }
 }

@@ -330,8 +330,7 @@ public partial class MainViewModel : ObservableObject
     // Drag-and-drop methods for node interval adjustment
     public void StartNodeDrag(int nodeIndex, double mouseX)
     {
-        // Validation
-        if (IsExecuting) return; // Don't allow drag during execution
+        // Validation - allow drag during execution for runtime adjustment
         if (nodeIndex < 0 || nodeIndex >= TimelineNodes.Count) return;
         if (TimelineNodes[nodeIndex].IsEndPlaceholder) return; // Can't drag end placeholder
         if (_profileService.CurrentProfile == null) return;
@@ -367,6 +366,12 @@ public partial class MainViewModel : ObservableObject
         // Update the appropriate stage duration
         int stageIndex = (_draggedNodeIndex == 0) ? 0 : _draggedNodeIndex - 1;
         _profileService.CurrentProfile.Stages[stageIndex].DurationSeconds = newDuration;
+
+        // If executing and dragging the current stage, notify executor for runtime adjustment
+        if (IsExecuting && stageIndex == CurrentStageIndex)
+        {
+            _stageExecutor.AdjustCurrentStageDuration(newDuration);
+        }
 
         // Recalculate positions for affected nodes
         // Start from the node whose line width is changing (stageIndex, not _draggedNodeIndex)

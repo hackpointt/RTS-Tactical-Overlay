@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("RTS-Tactical-Overlay")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0a91374f94a058426a96fab7a99144af237b0f72")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6fd10bcc1efcf9d2c9025b85754d32581c2bda9c")]
 [assembly: System.Reflection.AssemblyProductAttribute("RTS-Tactical-Overlay")]
 [assembly: System.Reflection.AssemblyTitleAttribute("RTS-Tactical-Overlay")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

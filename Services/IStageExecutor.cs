@@ -63,4 +63,11 @@ public interface IStageExecutor
     /// EventArgs: (currentStageIndex, progressInStage 0.0-1.0)
     /// </summary>
     event EventHandler<(int stageIndex, double progress)>? ProgressUpdated;
+
+    /// <summary>
+    /// Adjusts the target duration of the currently executing stage at runtime.
+    /// Used for drag-and-drop node adjustment during execution.
+    /// </summary>
+    /// <param name="newDurationSeconds">The new target duration in seconds (minimum 0.1)</param>
+    void AdjustCurrentStageDuration(double newDurationSeconds);
 }

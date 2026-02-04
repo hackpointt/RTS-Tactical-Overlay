@@ -3,7 +3,7 @@
   "description": "Sample profile for testing unit group cycling",
   "stages": [
     {
-      "durationSeconds": 2.5666666666666713,
+      "durationSeconds": 2.0000000000000107,
       "unitKey": "1",
       "description": "Infantry group",
       "doubleTap": true,
@@ -24,7 +24,7 @@
       "doubleTapDelayMs": 50
     },
     {
-      "durationSeconds": 2.4333333333333313,
+      "durationSeconds": 2,
       "unitKey": "4",
       "description": "Air support",
       "doubleTap": true,
@@ -39,5 +39,5 @@
     }
   ],
   "loop": true,
-  "totalDurationSeconds": 10.466666666666665
+  "totalDurationSeconds": 9.466666666666674
 }
