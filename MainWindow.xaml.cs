@@ -3,6 +3,8 @@ using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Controls;
+using System.Windows.Media;
 using RTS_Tactical_Overlay.Native;
 using RTS_Tactical_Overlay.ViewModels;
 
@@ -76,5 +78,65 @@ public partial class MainWindow : Window
         {
             _viewModel.LoadProfileCommand.Execute(samplePath);
         }
+    }
+
+    private void Node_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Grid grid) return;
+        if (DataContext is not MainViewModel viewModel) return;
+
+        // Get node index from Tag
+        if (grid.Tag is not int nodeIndex) return;
+
+        // Capture mouse to receive events even when cursor leaves the element
+        grid.CaptureMouse();
+
+        // Get mouse position relative to the canvas
+        var canvas = FindParentCanvas(grid);
+        if (canvas == null) return;
+
+        Point mousePos = e.GetPosition(canvas);
+        viewModel.StartNodeDrag(nodeIndex, mousePos.X);
+
+        e.Handled = true;
+    }
+
+    private void Node_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not Grid grid) return;
+        if (DataContext is not MainViewModel viewModel) return;
+        if (!viewModel.IsDraggingNode) return;
+
+        // Get mouse position relative to the canvas
+        var canvas = FindParentCanvas(grid);
+        if (canvas == null) return;
+
+        Point mousePos = e.GetPosition(canvas);
+        viewModel.UpdateNodeDrag(mousePos.X);
+
+        e.Handled = true;
+    }
+
+    private void Node_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Grid grid) return;
+        if (DataContext is not MainViewModel viewModel) return;
+
+        grid.ReleaseMouseCapture();
+        viewModel.EndNodeDrag();
+
+        e.Handled = true;
+    }
+
+    private Canvas? FindParentCanvas(DependencyObject child)
+    {
+        DependencyObject parent = VisualTreeHelper.GetParent(child);
+        while (parent != null)
+        {
+            if (parent is Canvas canvas)
+                return canvas;
+            parent = VisualTreeHelper.GetParent(parent);
+        }
+        return null;
     }
 }

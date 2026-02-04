@@ -1,42 +1,43 @@
 {
   "name": "Basic RTS Profile",
   "description": "Sample profile for testing unit group cycling",
-  "loop": true,
   "stages": [
     {
-      "durationSeconds": 2.0,
+      "durationSeconds": 2.5666666666666713,
       "unitKey": "1",
       "description": "Infantry group",
       "doubleTap": true,
       "doubleTapDelayMs": 50
     },
     {
-      "durationSeconds": 1.0,
+      "durationSeconds": 2.0499999999999945,
       "unitKey": "2",
       "description": "Armor group",
       "doubleTap": true,
       "doubleTapDelayMs": 50
     },
     {
-      "durationSeconds": 1.0,
+      "durationSeconds": 1.4166666666666685,
       "unitKey": "3",
       "description": "Artillery group",
       "doubleTap": true,
       "doubleTapDelayMs": 50
     },
     {
-      "durationSeconds": 2.0,
+      "durationSeconds": 2.4333333333333313,
       "unitKey": "4",
       "description": "Air support",
       "doubleTap": true,
       "doubleTapDelayMs": 50
     },
     {
-      "durationSeconds": 2.0,
+      "durationSeconds": 2,
       "unitKey": "5",
       "description": "Base defense",
       "doubleTap": true,
       "doubleTapDelayMs": 50
     }
-  ]
+  ],
+  "loop": true,
+  "totalDurationSeconds": 10.466666666666665
 }

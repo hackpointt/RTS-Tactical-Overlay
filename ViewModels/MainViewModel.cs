@@ -39,6 +39,17 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private double _timelineWidth = 100; // Default minimum width
 
+    // Drag state properties
+    [ObservableProperty]
+    private bool _isDraggingNode;
+
+    private int _draggedNodeIndex = -1;
+    private double _dragStartMouseX;
+    private double _dragStartDuration;
+    private double _pixelsPerSecondSnapshot;
+    private System.Threading.Timer? _saveTimer;
+    private string _profileFilePath = "";
+
     public MainViewModel(
         INativeInputSimulator inputSimulator,
         IProfileService profileService,
@@ -65,6 +76,7 @@ public partial class MainViewModel : ObservableObject
             var profile = await _profileService.LoadProfileAsync(filePath);
             if (profile != null)
             {
+                _profileFilePath = filePath; // Store for later saves
                 CurrentProfileName = profile.Name;
                 StatusText = $"Loaded: {profile.Name}";
                 BuildTimelineNodes(profile);
@@ -312,6 +324,153 @@ public partial class MainViewModel : ObservableObject
                 node.IncomingLineProgress = 0.0; // Line not lit yet
                 node.NodeProgress = 0.0; // Node not lit yet
             }
+        }
+    }
+
+    // Drag-and-drop methods for node interval adjustment
+    public void StartNodeDrag(int nodeIndex, double mouseX)
+    {
+        // Validation
+        if (IsExecuting) return; // Don't allow drag during execution
+        if (nodeIndex < 0 || nodeIndex >= TimelineNodes.Count) return;
+        if (TimelineNodes[nodeIndex].IsEndPlaceholder) return; // Can't drag end placeholder
+        if (_profileService.CurrentProfile == null) return;
+
+        // Initialize drag state
+        IsDraggingNode = true;
+        _draggedNodeIndex = nodeIndex;
+        _dragStartMouseX = mouseX;
+
+        // Determine which stage duration to modify
+        int stageIndex = (nodeIndex == 0) ? 0 : nodeIndex - 1;
+        _dragStartDuration = _profileService.CurrentProfile.Stages[stageIndex].DurationSeconds;
+
+        // Snapshot current pixelsPerSecond to keep scaling consistent during drag
+        double availableWidth = System.Windows.SystemParameters.PrimaryScreenWidth * 0.8 * 0.85;
+        double totalDuration = _profileService.CurrentProfile.TotalDurationSeconds;
+        _pixelsPerSecondSnapshot = totalDuration > 0 ? availableWidth / totalDuration : 50;
+        _pixelsPerSecondSnapshot = Math.Max(30, Math.Min(80, _pixelsPerSecondSnapshot));
+    }
+
+    public void UpdateNodeDrag(double mouseX)
+    {
+        if (!IsDraggingNode || _draggedNodeIndex < 0) return;
+        if (_profileService.CurrentProfile == null) return;
+
+        // Calculate delta in pixels and convert to time
+        double deltaX = mouseX - _dragStartMouseX;
+        double newDuration = _dragStartDuration + (deltaX / _pixelsPerSecondSnapshot);
+
+        // Enforce minimum duration (0.5 seconds)
+        newDuration = Math.Max(0.5, newDuration);
+
+        // Update the appropriate stage duration
+        int stageIndex = (_draggedNodeIndex == 0) ? 0 : _draggedNodeIndex - 1;
+        _profileService.CurrentProfile.Stages[stageIndex].DurationSeconds = newDuration;
+
+        // Recalculate positions for affected nodes
+        // Start from the node whose line width is changing (stageIndex, not _draggedNodeIndex)
+        RecalculateNodePositions(stageIndex);
+
+        // Reset debounce timer for profile save
+        ResetSaveTimer();
+    }
+
+    public void EndNodeDrag()
+    {
+        if (!IsDraggingNode) return;
+
+        IsDraggingNode = false;
+        _draggedNodeIndex = -1;
+
+        // Timer will trigger save after 3 seconds of inactivity
+    }
+
+    private void RecalculateNodePositions(int startNodeIndex)
+    {
+        if (_profileService.CurrentProfile == null) return;
+
+        // Recalculate cumulative time from the start
+        double cumulativeTime = 0;
+        for (int i = 0; i < startNodeIndex; i++)
+        {
+            cumulativeTime += _profileService.CurrentProfile.Stages[i].DurationSeconds;
+        }
+
+        // Update positions for nodes from startNodeIndex onwards
+        for (int i = startNodeIndex; i < TimelineNodes.Count; i++)
+        {
+            var node = TimelineNodes[i];
+
+            if (node.IsEndPlaceholder)
+            {
+                node.XPosition = cumulativeTime * _pixelsPerSecondSnapshot + 50;
+                node.Width = 0;
+            }
+            else
+            {
+                var stage = _profileService.CurrentProfile.Stages[i];
+                node.XPosition = cumulativeTime * _pixelsPerSecondSnapshot;
+
+                // Calculate line width
+                double lineWidth = stage.DurationSeconds * _pixelsPerSecondSnapshot;
+                if (i == _profileService.CurrentProfile.Stages.Count - 1)
+                {
+                    lineWidth += 50; // Add gap to reach end placeholder
+                }
+                node.Width = lineWidth;
+
+                cumulativeTime += stage.DurationSeconds;
+            }
+        }
+
+        // Update timeline width
+        if (TimelineNodes.Count > 0)
+        {
+            var lastNode = TimelineNodes[TimelineNodes.Count - 1];
+            TimelineWidth = lastNode.XPosition + lastNode.Width + 50;
+        }
+    }
+
+    private void ResetSaveTimer()
+    {
+        // Cancel existing timer
+        _saveTimer?.Dispose();
+
+        // Create new timer that fires after 3 seconds
+        _saveTimer = new System.Threading.Timer(
+            callback: async _ => await SaveProfileDebounced(),
+            state: null,
+            dueTime: 3000,
+            period: System.Threading.Timeout.Infinite
+        );
+    }
+
+    private async System.Threading.Tasks.Task SaveProfileDebounced()
+    {
+        if (_profileService.CurrentProfile == null) return;
+
+        try
+        {
+            // Determine file path (use last loaded path or default)
+            string filePath = string.IsNullOrEmpty(_profileFilePath)
+                ? System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sample-profile.json")
+                : _profileFilePath;
+
+            await _profileService.SaveProfileAsync(_profileService.CurrentProfile, filePath);
+
+            // Update status on UI thread
+            System.Windows.Application.Current.Dispatcher.Invoke(() =>
+            {
+                StatusText = $"Profile saved: {_profileService.CurrentProfile.Name}";
+            });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.Application.Current.Dispatcher.Invoke(() =>
+            {
+                StatusText = $"Save error: {ex.Message}";
+            });
         }
     }
 }
