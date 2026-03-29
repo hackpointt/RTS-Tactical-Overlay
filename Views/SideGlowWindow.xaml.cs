@@ -150,14 +150,17 @@ public partial class SideGlowWindow : Window
     /// </summary>
     public void SetWidth(double width)
     {
-        Width = width;
-
-        if (!_isLeftEdge)
+        Dispatcher.Invoke(() =>
         {
-            // Right edge window needs repositioning after width change
-            // Otherwise it would move away from the edge
-            Left = SystemParameters.PrimaryScreenWidth - width;
-        }
+            Width = width;
+
+            if (!_isLeftEdge)
+            {
+                // Right edge window needs repositioning after width change
+                // Otherwise it would move away from the edge
+                Left = SystemParameters.PrimaryScreenWidth - width;
+            }
+        });
     }
 
     /// <summary>
@@ -170,15 +173,19 @@ public partial class SideGlowWindow : Window
         _breathSpeedSeconds = breathSpeedSeconds;
         _maxIntensity = maxIntensity;
 
-        // Set initial brightness (start at 30% to avoid sudden flash)
-        UpdateGradientColor(0.3);
+        // Use Dispatcher to ensure we're on UI thread
+        Dispatcher.Invoke(() =>
+        {
+            // Set initial brightness (start at 30% to avoid sudden flash)
+            UpdateGradientColor(0.3);
 
-        // Create animation storyboard
-        CreateBreathingAnimation();
+            // Create animation storyboard
+            CreateBreathingAnimation();
 
-        // Begin the animation
-        _breathingStoryboard?.Begin();
-        _isAnimating = true;
+            // Begin the animation
+            _breathingStoryboard?.Begin();
+            _isAnimating = true;
+        });
     }
 
     /// <summary>
@@ -188,11 +195,15 @@ public partial class SideGlowWindow : Window
     {
         _currentGlowColor = color;
 
-        // Use the border's current opacity (animation sets this value)
-        double currentOpacity = GlowBorder.Opacity;
+        // Use Dispatcher to ensure we're on UI thread
+        Dispatcher.Invoke(() =>
+        {
+            // Use the border's current opacity (animation sets this value)
+            double currentOpacity = GlowBorder.Opacity;
 
-        // Apply new color at the same brightness level
-        UpdateGradientColor(currentOpacity);
+            // Apply new color at the same brightness level
+            UpdateGradientColor(currentOpacity);
+        });
     }
 
     /// <summary>
@@ -200,10 +211,13 @@ public partial class SideGlowWindow : Window
     /// </summary>
     public void PauseBreathing()
     {
-        if (_isAnimating && _breathingStoryboard != null)
+        Dispatcher.Invoke(() =>
         {
-            _breathingStoryboard.Pause();
-        }
+            if (_isAnimating && _breathingStoryboard != null)
+            {
+                _breathingStoryboard.Pause();
+            }
+        });
     }
 
     /// <summary>
@@ -211,10 +225,13 @@ public partial class SideGlowWindow : Window
     /// </summary>
     public void ResumeBreathing()
     {
-        if (_isAnimating && _breathingStoryboard != null)
+        Dispatcher.Invoke(() =>
         {
-            _breathingStoryboard.Resume();
-        }
+            if (_isAnimating && _breathingStoryboard != null)
+            {
+                _breathingStoryboard.Resume();
+            }
+        });
     }
 
     /// <summary>
@@ -225,31 +242,34 @@ public partial class SideGlowWindow : Window
         // Remove rendering event handler to prevent memory leak
         CompositionTarget.Rendering -= OnRendering;
 
-        // Stop the looping animation
-        if (_breathingStoryboard != null)
+        Dispatcher.Invoke(() =>
         {
-            _breathingStoryboard.Stop();
-            _isAnimating = false;
-        }
+            // Stop the looping animation
+            if (_breathingStoryboard != null)
+            {
+                _breathingStoryboard.Stop();
+                _isAnimating = false;
+            }
 
-        // Create a fade-out animation (0.3 seconds)
-        var fadeOutAnimation = new DoubleAnimation
-        {
-            From = GlowBorder.Opacity,      // Start from current brightness
-            To = 0,                          // End at 0 (fully transparent)
-            Duration = TimeSpan.FromSeconds(0.3),
-            FillBehavior = FillBehavior.Stop // Don't hold final value
-        };
+            // Create a fade-out animation (0.3 seconds)
+            var fadeOutAnimation = new DoubleAnimation
+            {
+                From = GlowBorder.Opacity,      // Start from current brightness
+                To = 0,                          // End at 0 (fully transparent)
+                Duration = TimeSpan.FromSeconds(0.3),
+                FillBehavior = FillBehavior.Stop // Don't hold final value
+            };
 
-        // When fade completes, ensure gradient is fully transparent
-        fadeOutAnimation.Completed += (s, e) =>
-        {
-            UpdateGradientColor(0);
-            GlowBorder.Opacity = 0;
-        };
+            // When fade completes, ensure gradient is fully transparent
+            fadeOutAnimation.Completed += (s, e) =>
+            {
+                UpdateGradientColor(0);
+                GlowBorder.Opacity = 0;
+            };
 
-        // Apply fade animation to the GlowBorder
-        GlowBorder.BeginAnimation(OpacityProperty, fadeOutAnimation);
+            // Apply fade animation to the GlowBorder
+            GlowBorder.BeginAnimation(OpacityProperty, fadeOutAnimation);
+        });
     }
 
     // ============== 内部方法 ==============
@@ -317,7 +337,9 @@ public partial class SideGlowWindow : Window
         {
             // Read the current opacity (animation sets this value)
             double currentOpacity = GlowBorder.Opacity;
-            UpdateGradientColor(currentOpacity);
+
+            // Must use Dispatcher to access UI elements from render thread
+            Dispatcher.Invoke(() => UpdateGradientColor(currentOpacity));
         }
     }
 }
