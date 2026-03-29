@@ -14,6 +14,7 @@ public partial class MainViewModel : ObservableObject
     private readonly IProfileService _profileService;
     private readonly IStageExecutor _stageExecutor;
     private readonly IGlobalHotkeyService _hotkeyService;
+    private readonly IEdgeGlowService _edgeGlowService;
 
     [ObservableProperty]
     private string _statusText = "Press F5 to load sample profile";
@@ -43,6 +44,22 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _isDraggingNode;
 
+    [ObservableProperty]
+    private string _dragDurationText = "";
+
+    [ObservableProperty]
+    private double _dragTooltipX;
+
+    // Profile management properties
+    [ObservableProperty]
+    private ObservableCollection<ProfileIndexEntry> _availableProfiles = new();
+
+    [ObservableProperty]
+    private bool _isProfileMenuOpen;
+
+    [ObservableProperty]
+    private string _currentProfileAlias = "";
+
     private int _draggedNodeIndex = -1;
     private double _dragStartMouseX;
     private double _dragStartDuration;
@@ -54,18 +71,63 @@ public partial class MainViewModel : ObservableObject
         INativeInputSimulator inputSimulator,
         IProfileService profileService,
         IStageExecutor stageExecutor,
-        IGlobalHotkeyService hotkeyService)
+        IGlobalHotkeyService hotkeyService,
+        IEdgeGlowService edgeGlowService)
     {
         _inputSimulator = inputSimulator;
         _profileService = profileService;
         _stageExecutor = stageExecutor;
         _hotkeyService = hotkeyService;
+        _edgeGlowService = edgeGlowService;
 
         _stageExecutor.StageChanged += OnStageChanged;
         _stageExecutor.ExecutionCompleted += OnExecutionCompleted;
         _stageExecutor.ProgressUpdated += OnProgressUpdated;
         _hotkeyService.HotkeyPressed += OnHotkeyPressed;
         _hotkeyService.Start();
+
+        // Initialize profile system asynchronously
+        _ = InitializeProfileSystemAsync();
+    }
+
+    private async System.Threading.Tasks.Task InitializeProfileSystemAsync()
+    {
+        try
+        {
+            await _profileService.InitializeAsync();
+            await RefreshProfileListAsync();
+
+            if (_profileService.CurrentProfile != null)
+            {
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    CurrentProfileName = _profileService.CurrentProfile.Name;
+                    CurrentProfileAlias = _profileService.CurrentProfile.Alias;
+                    StatusText = $"Loaded: {_profileService.CurrentProfile.Name}";
+                    BuildTimelineNodes(_profileService.CurrentProfile);
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Windows.Application.Current.Dispatcher.Invoke(() =>
+            {
+                StatusText = $"Init error: {ex.Message}";
+            });
+        }
+    }
+
+    private async System.Threading.Tasks.Task RefreshProfileListAsync()
+    {
+        var profiles = await _profileService.GetAllProfilesAsync();
+        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+        {
+            AvailableProfiles.Clear();
+            foreach (var p in profiles)
+            {
+                AvailableProfiles.Add(p);
+            }
+        });
     }
 
     [RelayCommand]
@@ -101,6 +163,15 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // Get edge glow settings (use default if null)
+        var glowSettings = _profileService.CurrentProfile.EdgeGlowSettings ?? EdgeGlowSettings.Default;
+
+        // Get initial color for first stage
+        var initialColor = NodeColorPalette.GetColorForIndex(0);
+
+        // Start edge glow breathing effect
+        _edgeGlowService.StartGlow(initialColor, glowSettings);
+
         _stageExecutor.Start(_profileService.CurrentProfile);
         IsExecuting = true;
         IsPaused = false;
@@ -111,6 +182,7 @@ public partial class MainViewModel : ObservableObject
     private void StopExecution()
     {
         _stageExecutor.Stop();
+        _edgeGlowService.StopGlow();
         IsExecuting = false;
         IsPaused = false;
         CurrentStageIndex = -1;
@@ -122,6 +194,7 @@ public partial class MainViewModel : ObservableObject
     private void PauseExecution()
     {
         _stageExecutor.Pause();
+        _edgeGlowService.PauseGlow();
         IsPaused = true;
         StatusText = "Paused";
     }
@@ -130,18 +203,154 @@ public partial class MainViewModel : ObservableObject
     private void ResumeExecution()
     {
         _stageExecutor.Resume();
+        _edgeGlowService.ResumeGlow();
         IsPaused = false;
         StatusText = "Executing...";
+    }
+
+    // Profile management commands
+    [RelayCommand]
+    private async System.Threading.Tasks.Task SwitchProfile(string profileId)
+    {
+        if (IsExecuting)
+        {
+            StopExecution();
+        }
+
+        var profile = await _profileService.SwitchProfileAsync(profileId);
+        if (profile != null)
+        {
+            CurrentProfileName = profile.Name;
+            CurrentProfileAlias = profile.Alias;
+            StatusText = $"Switched to: {profile.Name}";
+            BuildTimelineNodes(profile);
+        }
+        IsProfileMenuOpen = false;
+    }
+
+    [RelayCommand]
+    private async System.Threading.Tasks.Task CreateNewProfile()
+    {
+        var profile = await _profileService.CreateProfileAsync("New Profile", "NEW");
+        await RefreshProfileListAsync();
+        await SwitchProfile(profile.Id);
+    }
+
+    [RelayCommand]
+    private async System.Threading.Tasks.Task DeleteProfile(string profileId)
+    {
+        if (AvailableProfiles.Count <= 1)
+        {
+            StatusText = "Cannot delete the last profile";
+            return;
+        }
+
+        await _profileService.DeleteProfileAsync(profileId);
+        await RefreshProfileListAsync();
+
+        if (_profileService.CurrentProfile != null)
+        {
+            CurrentProfileName = _profileService.CurrentProfile.Name;
+            CurrentProfileAlias = _profileService.CurrentProfile.Alias;
+            BuildTimelineNodes(_profileService.CurrentProfile);
+        }
+    }
+
+    // Node management commands
+    [RelayCommand]
+    private void AddNodeAtPosition(double xPosition)
+    {
+        if (_profileService.CurrentProfile == null) return;
+        if (IsExecuting) return;
+
+        // Find insertion index based on x position
+        int insertIndex = 0;
+        for (int i = 0; i < TimelineNodes.Count; i++)
+        {
+            if (TimelineNodes[i].IsEndPlaceholder) break;
+            if (TimelineNodes[i].XPosition > xPosition) break;
+            insertIndex = i + 1;
+        }
+
+        // Create new stage with default values
+        var newStage = new Stage(2.0, (char)('1' + (insertIndex % 6)), "New Stage");
+        _profileService.CurrentProfile.Stages.Insert(insertIndex, newStage);
+
+        // Rebuild timeline
+        BuildTimelineNodes(_profileService.CurrentProfile);
+        ResetSaveTimer();
+    }
+
+    [RelayCommand]
+    private void DeleteNode(int stageIndex)
+    {
+        if (_profileService.CurrentProfile == null) return;
+        if (stageIndex < 0 || stageIndex >= _profileService.CurrentProfile.Stages.Count) return;
+        if (_profileService.CurrentProfile.Stages.Count <= 1)
+        {
+            StatusText = "Cannot delete the last node";
+            return;
+        }
+
+        _profileService.CurrentProfile.Stages.RemoveAt(stageIndex);
+        BuildTimelineNodes(_profileService.CurrentProfile);
+        ResetSaveTimer();
+    }
+
+    [RelayCommand]
+    private void ToggleNodeEnabled(int stageIndex)
+    {
+        if (_profileService.CurrentProfile == null) return;
+        if (stageIndex < 0 || stageIndex >= _profileService.CurrentProfile.Stages.Count) return;
+
+        var stage = _profileService.CurrentProfile.Stages[stageIndex];
+        stage.IsEnabled = !stage.IsEnabled;
+
+        // Rebuild timeline to reflect the change
+        BuildTimelineNodes(_profileService.CurrentProfile);
+
+        ResetSaveTimer();
+    }
+
+    // Profile switching via scroll wheel
+    public void SwitchToNextProfile()
+    {
+        if (AvailableProfiles.Count <= 1) return;
+
+        var currentId = _profileService.CurrentProfile?.Id ?? "";
+        int currentIndex = AvailableProfiles.ToList().FindIndex(p => p.Id == currentId);
+        int nextIndex = (currentIndex + 1) % AvailableProfiles.Count;
+
+        _ = SwitchProfile(AvailableProfiles[nextIndex].Id);
+    }
+
+    public void SwitchToPreviousProfile()
+    {
+        if (AvailableProfiles.Count <= 1) return;
+
+        var currentId = _profileService.CurrentProfile?.Id ?? "";
+        int currentIndex = AvailableProfiles.ToList().FindIndex(p => p.Id == currentId);
+        int prevIndex = (currentIndex - 1 + AvailableProfiles.Count) % AvailableProfiles.Count;
+
+        _ = SwitchProfile(AvailableProfiles[prevIndex].Id);
     }
 
     private void OnStageChanged(object? sender, int stageIndex)
     {
         CurrentStageIndex = stageIndex;
         UpdateTimelineActiveState();
+
+        // Update edge glow color to match current node
+        if (IsExecuting && _profileService.CurrentProfile != null)
+        {
+            var color = NodeColorPalette.GetColorForIndex(stageIndex);
+            _edgeGlowService.UpdateColor(color);
+        }
     }
 
     private void OnExecutionCompleted(object? sender, EventArgs e)
     {
+        _edgeGlowService.StopGlow();
         IsExecuting = false;
         IsPaused = false;
         CurrentStageIndex = -1;
@@ -151,18 +360,64 @@ public partial class MainViewModel : ObservableObject
 
     private void OnProgressUpdated(object? sender, (int stageIndex, double progress) data)
     {
-        // Update the current stage's outgoing line progress (60fps smooth animation)
-        // The line is drawn from current node, so we update current node's IncomingLineProgress
-        if (data.stageIndex >= 0 && data.stageIndex < TimelineNodes.Count)
-        {
-            TimelineNodes[data.stageIndex].IncomingLineProgress = data.progress;
+        if (_profileService.CurrentProfile == null) return;
+        if (data.stageIndex < 0 || data.stageIndex >= TimelineNodes.Count) return;
 
-            // Also update the next node's progress (node lights up as line reaches it)
-            int nextNodeIndex = data.stageIndex + 1;
-            if (nextNodeIndex < TimelineNodes.Count)
+        var stages = _profileService.CurrentProfile.Stages;
+
+        // Calculate total duration: current stage + following disabled stages
+        double totalDuration = stages[data.stageIndex].DurationSeconds;
+        int lastNodeIndex = data.stageIndex;
+
+        for (int i = data.stageIndex + 1; i < stages.Count; i++)
+        {
+            if (!stages[i].IsEnabled)
             {
-                TimelineNodes[nextNodeIndex].NodeProgress = data.progress;
+                totalDuration += stages[i].DurationSeconds;
+                lastNodeIndex = i;
             }
+            else
+            {
+                break;
+            }
+        }
+
+        // Calculate elapsed time based on progress
+        double elapsedTime = data.progress * totalDuration;
+        double accumulatedTime = 0;
+
+        // Update each segment's progress
+        for (int i = data.stageIndex; i <= lastNodeIndex && i < TimelineNodes.Count; i++)
+        {
+            double segmentDuration = stages[i].DurationSeconds;
+            double segmentStart = accumulatedTime;
+            double segmentEnd = accumulatedTime + segmentDuration;
+
+            if (elapsedTime >= segmentEnd)
+            {
+                // This segment is fully complete
+                TimelineNodes[i].IncomingLineProgress = 1.0;
+            }
+            else if (elapsedTime > segmentStart)
+            {
+                // This segment is partially complete
+                double segmentProgress = (elapsedTime - segmentStart) / segmentDuration;
+                TimelineNodes[i].IncomingLineProgress = segmentProgress;
+            }
+            else
+            {
+                // This segment hasn't started
+                TimelineNodes[i].IncomingLineProgress = 0.0;
+            }
+
+            accumulatedTime = segmentEnd;
+        }
+
+        // Update the next enabled node's progress
+        int nextEnabledIndex = lastNodeIndex + 1;
+        if (nextEnabledIndex < TimelineNodes.Count)
+        {
+            TimelineNodes[nextEnabledIndex].NodeProgress = data.progress;
         }
     }
 
@@ -344,6 +599,12 @@ public partial class MainViewModel : ObservableObject
         int stageIndex = (nodeIndex == 0) ? 0 : nodeIndex - 1;
         _dragStartDuration = _profileService.CurrentProfile.Stages[stageIndex].DurationSeconds;
 
+        // Initialize drag tooltip - position at midpoint of the line being adjusted
+        DragDurationText = $"{_dragStartDuration:F1} s";
+        double lineStartX = TimelineNodes[stageIndex].XPosition + 14; // Node center
+        double lineEndX = TimelineNodes[nodeIndex].XPosition + 14;
+        DragTooltipX = (lineStartX + lineEndX) / 2;
+
         // Snapshot current pixelsPerSecond to keep scaling consistent during drag
         double availableWidth = System.Windows.SystemParameters.PrimaryScreenWidth * 0.8 * 0.85;
         double totalDuration = _profileService.CurrentProfile.TotalDurationSeconds;
@@ -373,9 +634,14 @@ public partial class MainViewModel : ObservableObject
             _stageExecutor.AdjustCurrentStageDuration(newDuration);
         }
 
-        // Recalculate positions for affected nodes
-        // Start from the node whose line width is changing (stageIndex, not _draggedNodeIndex)
+        // Recalculate positions for affected nodes FIRST
         RecalculateNodePositions(stageIndex);
+
+        // Update drag tooltip text and position at midpoint of the line (after positions updated)
+        DragDurationText = $"{newDuration:F1} s";
+        double lineStartX = TimelineNodes[stageIndex].XPosition + 14;
+        double lineEndX = TimelineNodes[_draggedNodeIndex].XPosition + 14;
+        DragTooltipX = (lineStartX + lineEndX) / 2;
 
         // Reset debounce timer for profile save
         ResetSaveTimer();
@@ -457,12 +723,7 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            // Determine file path (use last loaded path or default)
-            string filePath = string.IsNullOrEmpty(_profileFilePath)
-                ? System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sample-profile.json")
-                : _profileFilePath;
-
-            await _profileService.SaveProfileAsync(_profileService.CurrentProfile, filePath);
+            await _profileService.SaveCurrentProfileAsync();
 
             // Update status on UI thread
             System.Windows.Application.Current.Dispatcher.Invoke(() =>
@@ -477,5 +738,16 @@ public partial class MainViewModel : ObservableObject
                 StatusText = $"Save error: {ex.Message}";
             });
         }
+    }
+
+    /// <summary>
+    /// Refreshes the timeline display after macro edits
+    /// </summary>
+    public void RefreshTimeline()
+    {
+        if (_profileService.CurrentProfile == null) return;
+
+        BuildTimelineNodes(_profileService.CurrentProfile);
+        ResetSaveTimer();
     }
 }
