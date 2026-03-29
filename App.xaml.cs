@@ -29,10 +29,15 @@ public partial class App : Application
         services.AddSingleton<IProfileService, ProfileService>();
         services.AddSingleton<IStageExecutor, StageExecutor>();
         services.AddSingleton<IGlobalHotkeyService, GlobalHotkeyService>();
+        services.AddSingleton<IEdgeGlowService, EdgeGlowService>();
         services.AddSingleton<MainViewModel>();
         services.AddTransient<MainWindow>();
 
         _serviceProvider = services.BuildServiceProvider();
+
+        // Initialize edge glow service (creates glow windows)
+        var edgeGlowService = _serviceProvider.GetRequiredService<IEdgeGlowService>();
+        edgeGlowService.Initialize();
 
         // Show main window
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
