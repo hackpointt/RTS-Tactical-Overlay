@@ -89,18 +89,25 @@ public partial class TimelineNode : ObservableObject
     public bool IsEndPlaceholder { get; set; }
 
     /// <summary>
+    /// Whether this node's stage is enabled
+    /// </summary>
+    public bool IsEnabled => IsEndPlaceholder || (Stage?.IsEnabled ?? true);
+
+    /// <summary>
     /// Display text for the node
     /// </summary>
-    public string DisplayText => IsEndPlaceholder ? "" : $"{Stage?.UnitKey}";
+    public string DisplayText => IsEndPlaceholder ? "" : Stage?.DisplayKey ?? "?";
 
     /// <summary>
     /// Tooltip text showing stage details
     /// </summary>
     public string TooltipText =>
         IsEndPlaceholder ? "End of timeline" :
-        $"Unit: {Stage.UnitKey}\n" +
-        $"Duration: {Stage.DurationSeconds:F1}s\n" +
-        $"{(string.IsNullOrEmpty(Stage.Description) ? "" : Stage.Description)}";
+        Stage?.UseMacro == true
+            ? $"Macro: {Stage.Macro!.Summary}\nDuration: {Stage.DurationSeconds:F1}s" +
+              $"{(string.IsNullOrEmpty(Stage.Description) ? "" : "\n" + Stage.Description)}"
+            : $"Key: {Stage.UnitKey}\nDuration: {Stage.DurationSeconds:F1}s" +
+              $"{(string.IsNullOrEmpty(Stage.Description) ? "" : "\n" + Stage.Description)}";
 
     public TimelineNode(Stage stage, int stageIndex)
     {

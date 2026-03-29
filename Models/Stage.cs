@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 
 namespace RTS_Tactical_Overlay.Models;
 
@@ -35,6 +36,28 @@ public class Stage
     /// </summary>
     public int DoubleTapDelayMs { get; set; } = 50;
 
+    /// <summary>
+    /// Whether this stage is enabled (disabled stages are skipped during execution)
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Optional macro to execute instead of simple key press
+    /// </summary>
+    public Macro? Macro { get; set; }
+
+    /// <summary>
+    /// Whether this stage uses a macro (vs simple UnitKey)
+    /// </summary>
+    [JsonIgnore]
+    public bool UseMacro => Macro?.IsValid == true;
+
+    /// <summary>
+    /// Display key text for UI (macro display or UnitKey)
+    /// </summary>
+    [JsonIgnore]
+    public string DisplayKey => UseMacro ? Macro!.GetDisplayText() : UnitKey.ToString();
+
     public Stage()
     {
     }
@@ -51,8 +74,13 @@ public class Stage
     /// </summary>
     public bool IsValid()
     {
-        return DurationSeconds > 0 &&
-               UnitKey >= '1' && UnitKey <= '6' &&
-               DoubleTapDelayMs >= 0;
+        if (DurationSeconds <= 0 || DoubleTapDelayMs < 0)
+            return false;
+
+        // Valid if using macro OR using traditional UnitKey
+        if (UseMacro)
+            return true;
+
+        return UnitKey >= '1' && UnitKey <= '9';
     }
 }

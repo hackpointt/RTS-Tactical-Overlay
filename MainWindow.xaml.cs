@@ -5,8 +5,10 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Controls;
 using System.Windows.Media;
+using RTS_Tactical_Overlay.Models;
 using RTS_Tactical_Overlay.Native;
 using RTS_Tactical_Overlay.ViewModels;
+using RTS_Tactical_Overlay.Views;
 
 namespace RTS_Tactical_Overlay;
 
@@ -88,6 +90,23 @@ public partial class MainWindow : Window
         // Get node index from Tag
         if (grid.Tag is not int nodeIndex) return;
 
+        // Double-click to open macro editor
+        if (e.ClickCount == 2)
+        {
+            // Use Dispatcher to open editor after mouse event completes
+            Dispatcher.BeginInvoke(new Action(() => OpenMacroEditor(nodeIndex)));
+            e.Handled = true;
+            return;
+        }
+
+        // Shift+Click for quick delete
+        if (Keyboard.Modifiers == ModifierKeys.Shift)
+        {
+            viewModel.DeleteNodeCommand.Execute(nodeIndex);
+            e.Handled = true;
+            return;
+        }
+
         // Capture mouse to receive events even when cursor leaves the element
         grid.CaptureMouse();
 
@@ -99,6 +118,22 @@ public partial class MainWindow : Window
         viewModel.StartNodeDrag(nodeIndex, mousePos.X);
 
         e.Handled = true;
+    }
+
+    private void OpenMacroEditor(int nodeIndex)
+    {
+        if (_viewModel.TimelineNodes.Count <= nodeIndex) return;
+        var node = _viewModel.TimelineNodes[nodeIndex];
+        if (node.IsEndPlaceholder || node.Stage == null) return;
+
+        // Don't set Owner - MainWindow has WS_EX_NOACTIVATE which causes issues
+        var editor = new MacroEditorWindow(node.Stage);
+        editor.Topmost = true;
+
+        if (editor.ShowDialog() == true)
+        {
+            _viewModel.RefreshTimeline();
+        }
     }
 
     private void Node_MouseMove(object sender, MouseEventArgs e)
@@ -138,5 +173,83 @@ public partial class MainWindow : Window
             parent = VisualTreeHelper.GetParent(parent);
         }
         return null;
+    }
+
+    // Profile selector event handlers
+    private void ProfileSelector_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _viewModel.IsProfileMenuOpen = !_viewModel.IsProfileMenuOpen;
+        e.Handled = true;
+    }
+
+    private void ProfileSelector_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Delta > 0)
+            _viewModel.SwitchToPreviousProfile();
+        else
+            _viewModel.SwitchToNextProfile();
+        e.Handled = true;
+    }
+
+    private void ProfileItem_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement element) return;
+        if (element.DataContext is not ProfileIndexEntry entry) return;
+
+        _viewModel.SwitchProfileCommand.Execute(entry.Id);
+        e.Handled = true;
+    }
+
+    private void NewProfile_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _viewModel.CreateNewProfileCommand.Execute(null);
+        e.Handled = true;
+    }
+
+    private void DeleteProfile_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement element) return;
+        if (element.DataContext is not ProfileIndexEntry entry) return;
+
+        _viewModel.DeleteProfileCommand.Execute(entry.Id);
+        e.Handled = true;
+    }
+
+    // Node management event handlers
+    private void Node_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // Right-click is handled by ContextMenu automatically
+        e.Handled = true;
+    }
+
+    private void DeleteNode_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem) return;
+        if (menuItem.Parent is not ContextMenu contextMenu) return;
+        if (contextMenu.PlacementTarget is not Grid grid) return;
+        if (grid.Tag is not int stageIndex) return;
+
+        _viewModel.DeleteNodeCommand.Execute(stageIndex);
+    }
+
+    private void ToggleNodeEnabled_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem) return;
+        if (menuItem.Parent is not ContextMenu contextMenu) return;
+        if (contextMenu.PlacementTarget is not Grid grid) return;
+        if (grid.Tag is not int stageIndex) return;
+
+        _viewModel.ToggleNodeEnabledCommand.Execute(stageIndex);
+    }
+
+    // Timeline double-click to add node
+    private void Timeline_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount != 2) return;
+        if (sender is not Canvas canvas) return;
+
+        Point mousePos = e.GetPosition(canvas);
+        _viewModel.AddNodeAtPositionCommand.Execute(mousePos.X);
+        e.Handled = true;
     }
 }

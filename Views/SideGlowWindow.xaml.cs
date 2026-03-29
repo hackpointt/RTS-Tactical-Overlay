@@ -188,9 +188,8 @@ public partial class SideGlowWindow : Window
     {
         _currentGlowColor = color;
 
-        // Get current opacity from running animation
-        // If animation is null, use border's current opacity
-        double currentOpacity = _breathingAnimation?.CurrentValue ?? GlowBorder.Opacity;
+        // Use the border's current opacity (animation sets this value)
+        double currentOpacity = GlowBorder.Opacity;
 
         // Apply new color at the same brightness level
         UpdateGradientColor(currentOpacity);
@@ -223,6 +222,9 @@ public partial class SideGlowWindow : Window
     /// </summary>
     public void StopBreathing()
     {
+        // Remove rendering event handler to prevent memory leak
+        CompositionTarget.Rendering -= OnRendering;
+
         // Stop the looping animation
         if (_breathingStoryboard != null)
         {
@@ -299,15 +301,23 @@ public partial class SideGlowWindow : Window
         // Tell storyboard which property to animate
         Storyboard.SetTargetProperty(_breathingAnimation, new PropertyPath(OpacityProperty));
 
-        // Subscribe to animation time changes
-        // This allows us to update gradient color as opacity changes
-        _breathingAnimation.CurrentTimeInvalidated += (s, e) =>
+        // Use CompositionTarget.Rendering to sync color with opacity each frame
+        // This event fires before each frame is rendered
+        CompositionTarget.Rendering -= OnRendering;
+        CompositionTarget.Rendering += OnRendering;
+    }
+
+    /// <summary>
+    /// Called each frame before rendering
+    /// Updates gradient color to match current opacity
+    /// </summary>
+    private void OnRendering(object? sender, EventArgs e)
+    {
+        if (_isAnimating)
         {
-            if (_breathingAnimation?.CurrentValue != null)
-            {
-                double currentOpacity = (double)_breathingAnimation.CurrentValue;
-                UpdateGradientColor(currentOpacity);
-            }
-        };
+            // Read the current opacity (animation sets this value)
+            double currentOpacity = GlowBorder.Opacity;
+            UpdateGradientColor(currentOpacity);
+        }
     }
 }

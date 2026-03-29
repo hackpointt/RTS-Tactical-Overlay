@@ -4,17 +4,17 @@
 winexe
 C#
 .cs
-D:\Dev\Cmd\obj\Debug\net8.0-windows\
+F:\Dev\Cmd\obj\Debug\net8.0-windows\
 RTS_Tactical_Overlay
 none
 false
 TRACE;DEBUG;NET;NET8_0;NETCOREAPP
-D:\Dev\Cmd\App.xaml
-11407045341
+F:\Dev\Cmd\App.xaml
+3-1901440939
 
-24-202628766
+351519680500
 226223969264
-MainWindow.xaml;
+MainWindow.xaml;Views\MacroEditorWindow.xaml;Views\SideGlowWindow.xaml;
 
 False
 

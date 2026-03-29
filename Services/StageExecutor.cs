@@ -121,12 +121,44 @@ public class StageExecutor : IStageExecutor
                 }
 
                 var stage = _currentProfile.Stages[_currentStageIndex];
+
+                // Skip disabled stages (handled by accumulating their duration)
+                if (!stage.IsEnabled)
+                {
+                    _currentStageIndex++;
+                    if (_currentStageIndex >= _currentProfile.Stages.Count)
+                    {
+                        if (_currentProfile.Loop)
+                        {
+                            _currentStageIndex = 0;
+                        }
+                        else
+                        {
+                            IsRunning = false;
+                            ExecutionCompleted?.Invoke(this, EventArgs.Empty);
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
                 _stageStopwatch.Restart();
                 _pausedElapsedTime = 0;
 
                 StageChanged?.Invoke(this, _currentStageIndex);
                 ExecuteStageKeyPress(stage);
-                await WaitForStageDuration(stage.DurationSeconds, cancellationToken);
+
+                // Calculate total duration: current stage + all following disabled stages
+                double totalDuration = stage.DurationSeconds;
+                int nextIndex = _currentStageIndex + 1;
+                while (nextIndex < _currentProfile.Stages.Count &&
+                       !_currentProfile.Stages[nextIndex].IsEnabled)
+                {
+                    totalDuration += _currentProfile.Stages[nextIndex].DurationSeconds;
+                    nextIndex++;
+                }
+
+                await WaitForStageDuration(totalDuration, cancellationToken);
 
                 _currentStageIndex++;
 
@@ -159,21 +191,97 @@ public class StageExecutor : IStageExecutor
     {
         try
         {
-            if (stage.DoubleTap)
+            if (stage.UseMacro)
             {
-                _inputSimulator.SendKeyPress(stage.UnitKey);
-                Thread.Sleep(stage.DoubleTapDelayMs);
-                _inputSimulator.SendKeyPress(stage.UnitKey);
+                ExecuteMacro(stage.Macro!);
             }
             else
             {
-                _inputSimulator.SendKeyPress(stage.UnitKey);
+                // Original logic: backward compatible
+                if (stage.DoubleTap)
+                {
+                    _inputSimulator.SendKeyPress(stage.UnitKey);
+                    Thread.Sleep(stage.DoubleTapDelayMs);
+                    _inputSimulator.SendKeyPress(stage.UnitKey);
+                }
+                else
+                {
+                    _inputSimulator.SendKeyPress(stage.UnitKey);
+                }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error executing key press: {ex.Message}");
         }
+    }
+
+    private void ExecuteMacro(Macro macro)
+    {
+        foreach (var action in macro.Actions)
+        {
+            switch (action.Type)
+            {
+                case MacroActionType.KeyPress:
+                    ExecuteKeyPress(action);
+                    break;
+                case MacroActionType.KeyDown:
+                    ExecuteKeyDown(action);
+                    break;
+                case MacroActionType.KeyUp:
+                    ExecuteKeyUp(action);
+                    break;
+                case MacroActionType.Delay:
+                    Thread.Sleep(action.DelayMs);
+                    break;
+            }
+        }
+    }
+
+    private void ExecuteKeyPress(MacroAction action)
+    {
+        if (action.Modifiers?.Count > 0)
+        {
+            // Press modifiers
+            foreach (var mod in action.Modifiers)
+                _inputSimulator.SendKeyDown(mod);
+
+            // Press key
+            if (action.Key.HasValue)
+                _inputSimulator.SendKeyPress(action.Key.Value);
+            else if (action.VirtualKeyCode.HasValue)
+                _inputSimulator.SendKeyPress(action.VirtualKeyCode.Value);
+
+            // Release modifiers
+            foreach (var mod in action.Modifiers)
+                _inputSimulator.SendKeyUp(mod);
+        }
+        else
+        {
+            if (action.Key.HasValue)
+                _inputSimulator.SendKeyPress(action.Key.Value);
+            else if (action.VirtualKeyCode.HasValue)
+                _inputSimulator.SendKeyPress(action.VirtualKeyCode.Value);
+        }
+
+        if (action.DelayMs > 0 && action.Type == MacroActionType.KeyPress)
+            Thread.Sleep(action.DelayMs);
+    }
+
+    private void ExecuteKeyDown(MacroAction action)
+    {
+        if (action.Key.HasValue)
+            _inputSimulator.SendKeyDown((ushort)char.ToUpper(action.Key.Value));
+        else if (action.VirtualKeyCode.HasValue)
+            _inputSimulator.SendKeyDown(action.VirtualKeyCode.Value);
+    }
+
+    private void ExecuteKeyUp(MacroAction action)
+    {
+        if (action.Key.HasValue)
+            _inputSimulator.SendKeyUp((ushort)char.ToUpper(action.Key.Value));
+        else if (action.VirtualKeyCode.HasValue)
+            _inputSimulator.SendKeyUp(action.VirtualKeyCode.Value);
     }
 
     private async Task WaitForStageDuration(double durationSeconds, CancellationToken cancellationToken)

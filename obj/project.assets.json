@@ -1795,11 +1795,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "D:\\Dev\\Cmd\\RTS-Tactical-Overlay.csproj",
+      "projectUniqueName": "F:\\Dev\\Cmd\\RTS-Tactical-Overlay.csproj",
       "projectName": "RTS-Tactical-Overlay",
-      "projectPath": "D:\\Dev\\Cmd\\RTS-Tactical-Overlay.csproj",
+      "projectPath": "F:\\Dev\\Cmd\\RTS-Tactical-Overlay.csproj",
       "packagesPath": "C:\\Users\\Administrator\\.nuget\\packages\\",
-      "outputPath": "D:\\Dev\\Cmd\\obj\\",
+      "outputPath": "F:\\Dev\\Cmd\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\Administrator\\AppData\\Roaming\\NuGet\\NuGet.Config"

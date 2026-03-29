@@ -1,43 +1,50 @@
 {
+  "id": "a1b90d75-4e77-4a0e-a92b-716bc640509b",
   "name": "Basic RTS Profile",
+  "alias": "BASIC",
   "description": "Sample profile for testing unit group cycling",
   "stages": [
     {
-      "durationSeconds": 2.0000000000000107,
+      "durationSeconds": 1.550000000000005,
       "unitKey": "1",
       "description": "Infantry group",
       "doubleTap": true,
-      "doubleTapDelayMs": 50
+      "doubleTapDelayMs": 50,
+      "isEnabled": true
     },
     {
-      "durationSeconds": 2.0499999999999945,
+      "durationSeconds": 2.0166666666666604,
       "unitKey": "2",
       "description": "Armor group",
       "doubleTap": true,
-      "doubleTapDelayMs": 50
+      "doubleTapDelayMs": 50,
+      "isEnabled": true
     },
     {
-      "durationSeconds": 1.4166666666666685,
+      "durationSeconds": 2.5666666666666687,
       "unitKey": "3",
       "description": "Artillery group",
       "doubleTap": true,
-      "doubleTapDelayMs": 50
+      "doubleTapDelayMs": 50,
+      "isEnabled": true
     },
     {
       "durationSeconds": 2,
       "unitKey": "4",
       "description": "Air support",
       "doubleTap": true,
-      "doubleTapDelayMs": 50
+      "doubleTapDelayMs": 50,
+      "isEnabled": true
     },
     {
       "durationSeconds": 2,
       "unitKey": "5",
       "description": "Base defense",
       "doubleTap": true,
-      "doubleTapDelayMs": 50
+      "doubleTapDelayMs": 50,
+      "isEnabled": true
     }
   ],
   "loop": true,
-  "totalDurationSeconds": 9.466666666666674
+  "totalDurationSeconds": 10.133333333333335
 }

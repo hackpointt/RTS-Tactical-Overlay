@@ -1,0 +1,11 @@
+{
+  "activeProfileId": "a1b90d75-4e77-4a0e-a92b-716bc640509b",
+  "profiles": [
+    {
+      "id": "a1b90d75-4e77-4a0e-a92b-716bc640509b",
+      "name": "Basic RTS Profile",
+      "alias": "BASIC",
+      "fileName": "profile-a1b90d75-4e77-4a0e-a92b-716bc640509b.json"
+    }
+  ]
+}
