@@ -1,0 +1,26 @@
+<Window x:Class="RTS_Tactical_Overlay.Views.SideGlowWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Edge Glow"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual">
+
+    <Grid x:Name="RootGrid">
+        <!-- Gradient glow band -->
+        <!-- Left edge: gradient goes from color (left) to transparent (right) -->
+        <!-- Right edge: gradient goes from transparent (left) to color (right) -->
+        <Border x:Name="GlowBorder">
+            <Border.Background>
+                <LinearGradientBrush x:Name="GlowGradient" StartPoint="0,0" EndPoint="1,0">
+                    <GradientStop x:Name="ColorStop" Offset="0" Color="Transparent"/>
+                    <GradientStop x:Name="TransparentStop" Offset="1" Color="Transparent"/>
+                </LinearGradientBrush>
+            </Border.Background>
+        </Border>
+    </Grid>
+</Window>
