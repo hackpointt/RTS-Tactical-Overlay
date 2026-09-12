@@ -2,38 +2,51 @@ diff --git a/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp b/OptiScaler/inputs/NVNGX_DLS
 index 3ba1d03..0000000 100644
 --- a/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp
 +++ b/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp
-@@ -799,6 +799,34 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCom
+@@ -799,6 +799,43 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCom
          return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
      }
  
-+    // Warhammer III + ShortFuse DLSS5 compatibility test.
++    // Warhammer III + ShortFuse DLSS5 compatibility test v2.
 +    //
-+    // Warhammer III itself is a D3D11 title. OptiScaler needs to intercept the
-+    // game's D3D11 DLSS feature so OptiFG can consume the upscaler inputs.
-+    // ShortFuse's dlss5-feed addon, however, creates an auxiliary D3D12 DLSS
-+    // SuperSampling feature. Intercepting that D3D12 feature makes OptiScaler
-+    // replace the feeder's native DLSS feature and freezes presentation.
++    // WH3 itself is D3D11. We want OptiScaler to keep intercepting the game's
++    // D3D11 DLSS feature so OptiFG can consume its upscaler inputs. ShortFuse's
++    // dlss5-feed addon creates a separate D3D12 DLSS SuperSampling feature.
++    // Replacing that helper feature with an OptiScaler feature freezes WH3.
 +    //
-+    // Keep D3D11 interception untouched, but pass D3D12 SuperSampling / RR
-+    // through to native NGX for this game. This is intentionally scoped to
-+    // Warhammer3.exe for the first compatibility build.
++    // v1 gated passthrough on NVNGXProxy::InitDx12(D3D12Device). The captured
++    // log showed that gate was false even though native D3D12 NGX had already
++    // initialized successfully, so TryCreateOptiFeature still ran. v2 removes
++    // that redundant gate and forces native passthrough for WH3's D3D12 DLSS
++    // SuperSampling/RR calls. If native NGX is unexpectedly unavailable, fail
++    // closed instead of re-entering OptiScaler's D3D12 upscaler path.
 +    const auto exeName = Util::ExePath().filename().wstring();
 +    const bool wh3Dlss5Compat = _wcsicmp(exeName.c_str(), L"Warhammer3.exe") == 0;
++    const bool d3d12DlssAuxFeature =
++        InFeatureID == NVSDK_NGX_Feature_SuperSampling ||
++        InFeatureID == NVSDK_NGX_Feature_RayReconstruction;
 +
-+    if (wh3Dlss5Compat &&
-+        (InFeatureID == NVSDK_NGX_Feature_SuperSampling ||
-+         InFeatureID == NVSDK_NGX_Feature_RayReconstruction) &&
-+        cfg.DLSSEnabled.value_or_default() && NVNGXProxy::InitDx12(D3D12Device) &&
-+        NVNGXProxy::D3D12_CreateFeature() != nullptr)
++    if (wh3Dlss5Compat && d3d12DlssAuxFeature)
 +    {
-+        LOG_INFO("WH3/DLSS5 compat: passthrough native D3D12 NGX CreateFeature for feature {}", (int) InFeatureID);
++        if (NVNGXProxy::NVNGXModule() == nullptr)
++            NVNGXProxy::InitNVNGX();
 +
-+        NVSDK_NGX_Result res = NVNGXProxy::D3D12_CreateFeature()(InCmdList, InFeatureID, InParameters, OutHandle);
++        auto nativeCreate = NVNGXProxy::D3D12_CreateFeature();
++        LOG_INFO("WH3/DLSS5 compat v2: D3D12 feature {}, native CreateFeature available: {}",
++                 (int) InFeatureID, nativeCreate != nullptr);
 +
-+        if (*OutHandle)
-+            HandleToFeature[(*OutHandle)->Id] = InFeatureID;
++        if (cfg.DLSSEnabled.value_or_default() && nativeCreate != nullptr)
++        {
++            NVSDK_NGX_Result res = nativeCreate(InCmdList, InFeatureID, InParameters, OutHandle);
++            LOG_INFO("WH3/DLSS5 compat v2: native D3D12 CreateFeature result: 0x{:X}", (uint32_t) res);
 +
-+        return res;
++            if (*OutHandle)
++                HandleToFeature[(*OutHandle)->Id] = InFeatureID;
++
++            return res;
++        }
++
++        LOG_ERROR("WH3/DLSS5 compat v2: native D3D12 NGX unavailable; refusing OptiScaler interception");
++        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
 +    }
 +
      // OptiScaler internal handling (SuperSampling or RayReconstruction)
