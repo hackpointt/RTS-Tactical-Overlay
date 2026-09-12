@@ -1,0 +1,119 @@
+name: Build OptiScaler WH3 DLSS5 compat v15b
+
+on:
+  push:
+    branches:
+      - optiscaler-wh3-dlss5-test
+    paths:
+      - '.github/workflows/build-optiscaler-wh3-v15b.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Reuse proven v14 pipeline safely
+        shell: powershell
+        run: |
+          python -m pip install pyyaml --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          @'
+          import pathlib, yaml
+          wf = pathlib.Path('.github/workflows/build-optiscaler-wh3-v14.yml')
+          data = yaml.safe_load(wf.read_text(encoding='utf-8'))
+          wanted = [
+              'Reuse tested v13 source transforms',
+              'Apply v14 live status instrumentation',
+          ]
+          steps = {s.get('name'): s for s in data['jobs']['build']['steps'] if isinstance(s, dict)}
+          out = pathlib.Path('.v15b-v14')
+          out.mkdir(exist_ok=True)
+          # Important: preserve literal GitHub-expression text inside the nested v14 extractor.
+          # These generated scripts are executed by PowerShell, not re-parsed by Actions.
+          for i, name in enumerate(wanted):
+              (out / f'{i:02d}.ps1').write_text(steps[name]['run'], encoding='utf-8')
+          '@ | Set-Content -Encoding UTF8 .v15b_extract_v14.py
+
+          python .v15b_extract_v14.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Get-ChildItem .v15b-v14\*.ps1 | Sort-Object Name | ForEach-Object {
+            Write-Host "Running proven v14 transform: $($_.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Run v15 convergence and export patch
+        shell: powershell
+        run: |
+          @'
+          import os, pathlib, yaml
+          wf = pathlib.Path('.github/workflows/build-optiscaler-wh3-v15.yml')
+          data = yaml.safe_load(wf.read_text(encoding='utf-8'))
+          wanted = [
+              'Converge WH3 compatibility source',
+              'Export consolidated patch',
+          ]
+          steps = {s.get('name'): s for s in data['jobs']['build']['steps'] if isinstance(s, dict)}
+          out = pathlib.Path('.v15b-converge')
+          out.mkdir(exist_ok=True)
+          token = '$' + '{{ github.workspace }}'
+          ws = os.environ['GITHUB_WORKSPACE']
+          for i, name in enumerate(wanted):
+              script = steps[name]['run'].replace(token, ws)
+              (out / f'{i:02d}.ps1').write_text(script, encoding='utf-8')
+          '@ | Set-Content -Encoding UTF8 .v15b_extract_converge.py
+
+          python .v15b_extract_converge.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Get-ChildItem .v15b-converge\*.ps1 | Sort-Object Name | ForEach-Object {
+            Write-Host "Running v15 convergence step: $($_.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build verify and stage v15 candidate
+        shell: powershell
+        run: |
+          @'
+          import pathlib, yaml
+          wf = pathlib.Path('.github/workflows/build-optiscaler-wh3-v15.yml')
+          data = yaml.safe_load(wf.read_text(encoding='utf-8'))
+          wanted = [
+              'Build Release x64',
+              'Verify converged DLL',
+              'Stage artifact',
+          ]
+          steps = {s.get('name'): s for s in data['jobs']['build']['steps'] if isinstance(s, dict)}
+          out = pathlib.Path('.v15b-final')
+          out.mkdir(exist_ok=True)
+          for i, name in enumerate(wanted):
+              (out / f'{i:02d}.ps1').write_text(steps[name]['run'], encoding='utf-8')
+          '@ | Set-Content -Encoding UTF8 .v15b_extract_final.py
+
+          python .v15b_extract_final.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Get-ChildItem .v15b-final\*.ps1 | Sort-Object Name | ForEach-Object {
+            Write-Host "Running v15 final step: $($_.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-WH3-DLSS5-compat-v15-5c5e424d
+          path: package
+          if-no-files-found: error
