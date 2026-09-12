@@ -50,7 +50,7 @@ jobs:
         shell: powershell
         run: |
           $path = "optiscaler-src\OptiScaler\framegen\xefg\XeFG_Dx12.cpp"
-          $text = Get-Content -Raw $path
+          $text = [System.IO.File]::ReadAllText($path)
           $old = @'
               xefg_swapchain_result_t result;
               result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, &fsDesc, realQueue, factory12,
@@ -74,7 +74,8 @@ jobs:
             exit 1
           }
           $text = $text.Replace($old, $new)
-          Set-Content -Path $path -Value $text -Encoding utf8
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($path, $text, $utf8NoBom)
 
           $marker = Select-String -Path $path -Pattern "WH3/XeFG compat v4" -SimpleMatch
           if (-not $marker) {
