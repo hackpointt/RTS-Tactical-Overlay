@@ -1,6 +1,12 @@
 name: Build OptiScaler WH3 DLSS5 compat
 
 on:
+  push:
+    branches:
+      - optiscaler-wh3-dlss5-test
+    paths:
+      - '.github/workflows/build-optiscaler-wh3.yml'
+      - 'optiscaler-wh3-build/**'
   workflow_dispatch:
 
 permissions:
