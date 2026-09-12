@@ -1,0 +1,1 @@
+RC1 release packaging is automated by GitHub Actions.
