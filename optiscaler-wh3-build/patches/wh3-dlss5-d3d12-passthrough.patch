@@ -1,0 +1,41 @@
+diff --git a/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp b/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp
+index 3ba1d03..0000000 100644
+--- a/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp
++++ b/OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp
+@@ -799,6 +799,34 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCom
+         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+     }
+ 
++    // Warhammer III + ShortFuse DLSS5 compatibility test.
++    //
++    // Warhammer III itself is a D3D11 title. OptiScaler needs to intercept the
++    // game's D3D11 DLSS feature so OptiFG can consume the upscaler inputs.
++    // ShortFuse's dlss5-feed addon, however, creates an auxiliary D3D12 DLSS
++    // SuperSampling feature. Intercepting that D3D12 feature makes OptiScaler
++    // replace the feeder's native DLSS feature and freezes presentation.
++    //
++    // Keep D3D11 interception untouched, but pass D3D12 SuperSampling / RR
++    // through to native NGX for this game. This is intentionally scoped to
++    // Warhammer3.exe for the first compatibility build.
++    const auto exeName = Util::ExePath().filename().wstring();
++    const bool wh3Dlss5Compat = _wcsicmp(exeName.c_str(), L"Warhammer3.exe") == 0;
++
++    if (wh3Dlss5Compat &&
++        (InFeatureID == NVSDK_NGX_Feature_SuperSampling ||
++         InFeatureID == NVSDK_NGX_Feature_RayReconstruction) &&
++        cfg.DLSSEnabled.value_or_default() && NVNGXProxy::InitDx12(D3D12Device) &&
++        NVNGXProxy::D3D12_CreateFeature() != nullptr)
++    {
++        LOG_INFO("WH3/DLSS5 compat: passthrough native D3D12 NGX CreateFeature for feature {}", (int) InFeatureID);
++
++        NVSDK_NGX_Result res = NVNGXProxy::D3D12_CreateFeature()(InCmdList, InFeatureID, InParameters, OutHandle);
++
++        if (*OutHandle)
++            HandleToFeature[(*OutHandle)->Id] = InFeatureID;
++
++        return res;
++    }
++
+     // OptiScaler internal handling (SuperSampling or RayReconstruction)
+     auto tryResult = TryCreateOptiFeature(InCmdList, InFeatureID, InParameters, OutHandle);
+ 
