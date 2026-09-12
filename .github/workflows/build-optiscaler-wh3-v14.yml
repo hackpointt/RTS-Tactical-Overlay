@@ -1,0 +1,227 @@
+name: Build OptiScaler WH3 DLSS5 compat v14
+
+on:
+  push:
+    branches:
+      - optiscaler-wh3-dlss5-test
+    paths:
+      - '.github/workflows/build-optiscaler-wh3-v14.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Reuse tested v13 source transforms
+        shell: powershell
+        run: |
+          python -m pip install pyyaml --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          @'
+          import os, pathlib, yaml
+          wf = pathlib.Path('.github/workflows/build-optiscaler-wh3-v13.yml')
+          data = yaml.safe_load(wf.read_text(encoding='utf-8'))
+          wanted = [
+              'Reuse tested v12 source transforms',
+              'Apply v13 private-shadow fix',
+          ]
+          steps = {s.get('name'): s for s in data['jobs']['build']['steps'] if isinstance(s, dict)}
+          ws = os.environ['GITHUB_WORKSPACE']
+          out = pathlib.Path('.v14-reuse')
+          out.mkdir(exist_ok=True)
+          for i, name in enumerate(wanted):
+              script = steps[name]['run'].replace('${{ github.workspace }}', ws)
+              (out / f'{i:02d}.ps1').write_text(script, encoding='utf-8')
+          '@ | Set-Content -Encoding UTF8 .v14_extract.py
+
+          python .v14_extract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Get-ChildItem .v14-reuse\*.ps1 | Sort-Object Name | ForEach-Object {
+            Write-Host "Running reused transform: $($_.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Apply v14 live status instrumentation
+        shell: powershell
+        run: |
+          # 1) Add one lightweight timestamp to State so the menu can distinguish
+          # a loaded addon from native DLSS actually evaluating successfully.
+          $statePath = "optiscaler-src\OptiScaler\State.h"
+          $stateText = [System.IO.File]::ReadAllText($statePath)
+
+          $oldIncludes = @'
+          #include <set>
+          #include <deque>
+          #include <mutex>
+          '@
+          $newIncludes = @'
+          #include <set>
+          #include <deque>
+          #include <mutex>
+          #include <atomic>
+          '@
+          if (-not $stateText.Contains($oldIncludes)) { Write-Error "v14 State include target not found"; exit 1 }
+          $stateText = $stateText.Replace($oldIncludes, $newIncludes)
+
+          $oldFgState = @'
+              // FG
+              uint64_t fgLastFrame = 0;
+          '@
+          $newFgState = @'
+              // FG
+              uint64_t fgLastFrame = 0;
+
+              // WH3 native-DLSS -> OptiFG compatibility status. Updated only after a
+              // successful native NVIDIA D3D12 DLSS EvaluateFeature call.
+              std::atomic<uint64_t> wh3NativeDlssLastSuccessTick { 0 };
+          '@
+          if (-not $stateText.Contains($oldFgState)) { Write-Error "v14 State FG target not found"; exit 1 }
+          $stateText = $stateText.Replace($oldFgState, $newFgState)
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($statePath, $stateText, $utf8NoBom)
+
+          # 2) Timestamp successful native DLSS evaluation. This is intentionally after
+          # the NVIDIA passthrough result, so ACTIVE means the real native call succeeded.
+          $ngxPath = "optiscaler-src\OptiScaler\inputs\NVNGX_DLSS_Dx12.cpp"
+          $ngxText = [System.IO.File]::ReadAllText($ngxPath)
+
+          $oldResult = @'
+                      LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
+
+                      if (wh3BridgeRunning && bridgeFeature != nullptr)
+          '@
+          $newResult = @'
+                      LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
+
+                      if (wh3NativeBridge && result == NVSDK_NGX_Result_Success)
+                          State::Instance().wh3NativeDlssLastSuccessTick.store(GetTickCount64(), std::memory_order_relaxed);
+
+                      if (wh3BridgeRunning && bridgeFeature != nullptr)
+          '@
+          if (-not $ngxText.Contains($oldResult)) { Write-Error "v14 native DLSS result target not found"; exit 1 }
+          $ngxText = $ngxText.Replace($oldResult, $newResult)
+          [System.IO.File]::WriteAllText($ngxPath, $ngxText, $utf8NoBom)
+
+          # 3) Replace the misleading generic 'Upscaler is not active' message only for WH3.
+          # The private-shadow bridge deliberately keeps currentFeature null, so this block
+          # reports the actual four-stage pipeline instead.
+          $menuPath = "optiscaler-src\OptiScaler\menu\menu_common.cpp"
+          $menuText = [System.IO.File]::ReadAllText($menuPath)
+
+          $oldMenu = @'
+                      ImGui::Text("Upscaler is not active"); // Probably never will be visible
+          '@
+          $newMenu = @'
+                      if (_stricmp(State::Instance().gameExe.c_str(), "Warhammer3.exe") == 0)
+                      {
+                          const bool feederDetected = GetModuleHandleW(L"dlss5-feed.addon64") != nullptr;
+                          const uint64_t now = GetTickCount64();
+                          const uint64_t lastDlssSuccess =
+                              State::Instance().wh3NativeDlssLastSuccessTick.load(std::memory_order_relaxed);
+                          const bool nativeDlssActive = lastDlssSuccess != 0 && now >= lastDlssSuccess &&
+                                                      (now - lastDlssSuccess) < 2000;
+
+                          auto fg = State::Instance().currentFG;
+                          const bool depthReady = fg != nullptr && fg->HasResource(FG_ResourceType::Depth);
+                          const bool velocityReady = fg != nullptr && fg->HasResource(FG_ResourceType::Velocity);
+                          const bool xefgActive = State::Instance().activeFgOutput == FGOutput::XeFG && fg != nullptr &&
+                                                 fg->IsActive() && !fg->IsPaused();
+
+                          ImGui::Text("WH3 native DLSS5 -> XeFG bridge");
+                          ImGui::Text("DLSS5 feeder:    %s", feederDetected ? "DETECTED" : "not detected");
+                          ImGui::Text("Native DLSS NGX: %s", nativeDlssActive ? "ACTIVE" : "inactive");
+                          ImGui::Text("Depth + MV:      %s", (depthReady && velocityReady) ? "READY" : "not ready");
+                          ImGui::Text("XeFG:            %s", xefgActive ? "ACTIVE" : "inactive");
+                      }
+                      else
+                      {
+                          ImGui::Text("Upscaler is not active"); // Probably never will be visible
+                      }
+          '@
+          if (-not $menuText.Contains($oldMenu)) { Write-Error "v14 menu target not found"; exit 1 }
+          $menuText = $menuText.Replace($oldMenu, $newMenu)
+          [System.IO.File]::WriteAllText($menuPath, $menuText, $utf8NoBom)
+
+          foreach ($check in @(
+            @{ Path = $statePath; Marker = "wh3NativeDlssLastSuccessTick" },
+            @{ Path = $ngxPath; Marker = "wh3NativeDlssLastSuccessTick.store" },
+            @{ Path = $menuPath; Marker = "WH3 native DLSS5 -> XeFG bridge" },
+            @{ Path = $menuPath; Marker = "Native DLSS NGX:" }
+          )) {
+            if (-not (Select-String -Path $check.Path -Pattern $check.Marker -SimpleMatch)) {
+              Write-Error "Missing v14 marker: $($check.Marker)"; exit 1
+            }
+          }
+
+          Set-Location optiscaler-src
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          msbuild /m /p:Configuration=Release . /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify compiled DLL contains v2-v14 markers
+        shell: powershell
+        run: |
+          $dll = "optiscaler-src\x64\Release\a\OptiScaler.dll"
+          if (-not (Test-Path $dll)) { Write-Error "Compiled DLL missing"; exit 1 }
+          $ascii = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dll))
+          foreach ($marker in @(
+            "WH3/DLSS5 compat v2",
+            "WH3/XeFG compat v4",
+            "WH3/XeFG compat v6",
+            "WH3/XeFG compat v7",
+            "WH3/DLSS5 compat v12 shadow feature init",
+            "WH3/DLSS5 compat v12 bridge dormant",
+            "WH3/DLSS5 compat v12 bridge tick",
+            "WH3/DLSS5 compat v13: shadow kept private",
+            "WH3 native DLSS5 -> XeFG bridge",
+            "Native DLSS NGX:"
+          )) {
+            if (-not $ascii.Contains($marker)) { Write-Error "Missing marker: $marker"; exit 1 }
+          }
+
+      - name: Stage artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item -Recurse -Force "optiscaler-src\x64\Release\a\*" package\
+          @"
+          OptiScaler WH3 + DLSS5 compatibility test build v14
+          Base commit: 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
+
+          Keeps the proven v13 4K-stable pipeline unchanged.
+
+          New in v14:
+          - adds a WH3-specific live status block to the OptiScaler menu when the private bridge is active
+          - DLSS5 feeder: DETECTED only when dlss5-feed.addon64 is loaded
+          - Native DLSS NGX: ACTIVE only when a real native D3D12 EvaluateFeature succeeded within the last 2 seconds
+          - Depth + MV: READY reflects the resources currently tagged into OptiFG/XeFG
+          - XeFG: ACTIVE reflects the real XeFG state, not State::currentFeature
+
+          No rendering-path behavior is intentionally changed from v13.
+          "@ | Set-Content -Encoding UTF8 package\README-WH3-DLSS5.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-WH3-DLSS5-compat-v14-5c5e424d
+          path: package
+          if-no-files-found: error
