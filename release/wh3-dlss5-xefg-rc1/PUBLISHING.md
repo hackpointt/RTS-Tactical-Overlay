@@ -1,0 +1,1 @@
+Publishing is handled by .github/workflows/publish-wh3-dlss5-xefg-rc1.yml.
