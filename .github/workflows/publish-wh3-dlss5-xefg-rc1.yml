@@ -36,6 +36,11 @@ jobs:
 
       - name: Build curated RC1 package
         run: |
+          # Compatibility fix for the release builder: allow copying licenses into
+          # the already-created docs/Licenses directory.
+          sed -i 's/shutil.copytree(src, dst)/shutil.copytree(src, dst, dirs_exist_ok=True)/' \
+            release/wh3-dlss5-xefg-rc1/build_release.py
+
           python release/wh3-dlss5-xefg-rc1/build_release.py \
             --artifact-dir v15-artifact \
             --dist-dir dist
