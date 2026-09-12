@@ -46,22 +46,23 @@ jobs:
             exit 1
           }
 
-      - name: Apply XeFG windowed swapchain v4 workaround
+      - name: Apply XeFG v5 descriptor diagnostic and tearing workaround
         shell: powershell
         run: |
           $path = "optiscaler-src\OptiScaler\framegen\xefg\XeFG_Dx12.cpp"
           $text = [System.IO.File]::ReadAllText($path)
-          $old = @'
+
+          # Keep the v4 windowed fullscreen-descriptor workaround.
+          $oldCall = @'
               xefg_swapchain_result_t result;
               result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, &fsDesc, realQueue, factory12,
                                                                &params);
           '@
-          $new = @'
+          $newCall = @'
               xefg_swapchain_result_t result;
 
               // DX11->DX12 interop creates a windowed flip-model swapchain. Passing a
               // non-null fullscreen descriptor to XeFG causes DXGI_INVALID_CALL in WH3.
-              // Follow Intel's XeFG sample and omit the fullscreen descriptor for windowed mode.
               DXGI_SWAP_CHAIN_FULLSCREEN_DESC* xefgFullscreenDesc = desc->Windowed ? nullptr : &fsDesc;
               if (desc->Windowed)
                   LOG_INFO("WH3/XeFG compat v4: omitting fullscreen descriptor for windowed swapchain");
@@ -69,17 +70,55 @@ jobs:
               result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, xefgFullscreenDesc,
                                                                realQueue, factory12, &params);
           '@
-          if (-not $text.Contains($old)) {
-            Write-Error "XeFG target block not found"
+          if (-not $text.Contains($oldCall)) {
+            Write-Error "XeFG v4 target block not found"
             exit 1
           }
-          $text = $text.Replace($old, $new)
+          $text = $text.Replace($oldCall, $newCall)
+
+          # v5: log the fully constructed DXGI descriptor and test the one conspicuous
+          # difference from Intel's XeFG sample: WH3 carries ALLOW_TEARING into the
+          # interop swapchain, while XeFG adds FRAME_LATENCY_WAITABLE_OBJECT internally.
+          # Clear ALLOW_TEARING for this WH3-only experimental build.
+          $oldDesc = @'
+              scDesc.Stereo = false; // No info
+              scDesc.SwapEffect = desc->SwapEffect;
+              scDesc.Width = desc->BufferDesc.Width;
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsDesc {};
+          '@
+          $newDesc = @'
+              scDesc.Stereo = false; // No info
+              scDesc.SwapEffect = desc->SwapEffect;
+              scDesc.Width = desc->BufferDesc.Width;
+
+              LOG_INFO("WH3/XeFG compat v5 descriptor before sanitize: Width {}, Height {}, Format {}, Count {}, Usage {:X}, Flags {:X}, Scaling {}, SwapEffect {}, SampleCount {}, SampleQuality {}, AlphaMode {}",
+                       scDesc.Width, scDesc.Height, (UINT) scDesc.Format, scDesc.BufferCount, (UINT) scDesc.BufferUsage,
+                       (UINT) scDesc.Flags, (UINT) scDesc.Scaling, (UINT) scDesc.SwapEffect,
+                       scDesc.SampleDesc.Count, scDesc.SampleDesc.Quality, (UINT) scDesc.AlphaMode);
+
+              if ((scDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0)
+              {
+                  scDesc.Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+                  LOG_INFO("WH3/XeFG compat v5: cleared DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; Flags now {:X}",
+                           (UINT) scDesc.Flags);
+              }
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsDesc {};
+          '@
+          if (-not $text.Contains($oldDesc)) {
+            Write-Error "XeFG v5 descriptor target block not found"
+            exit 1
+          }
+          $text = $text.Replace($oldDesc, $newDesc)
+
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText($path, $text, $utf8NoBom)
 
-          $marker = Select-String -Path $path -Pattern "WH3/XeFG compat v4" -SimpleMatch
-          if (-not $marker) {
-            Write-Error "XeFG v4 marker missing after source rewrite"
+          $markerV4 = Select-String -Path $path -Pattern "WH3/XeFG compat v4" -SimpleMatch
+          $markerV5 = Select-String -Path $path -Pattern "WH3/XeFG compat v5 descriptor before sanitize" -SimpleMatch
+          if (-not $markerV4 -or -not $markerV5) {
+            Write-Error "XeFG compatibility marker missing after source rewrite"
             exit 1
           }
 
@@ -116,7 +155,11 @@ jobs:
             Write-Error "Compiled DLL does not contain XeFG v4 marker"
             exit 1
           }
-          Write-Host "Verified WH3 DLSS5 and XeFG v4 markers in compiled DLL."
+          if (-not $ascii.Contains("WH3/XeFG compat v5 descriptor before sanitize")) {
+            Write-Error "Compiled DLL does not contain XeFG v5 marker"
+            exit 1
+          }
+          Write-Host "Verified WH3 DLSS5, XeFG v4, and XeFG v5 markers in compiled DLL."
 
       - name: Stage artifact
         shell: powershell
@@ -125,14 +168,19 @@ jobs:
           Copy-Item -Recurse -Force "optiscaler-src\x64\Release\a\*" package\
           Copy-Item "optiscaler-wh3-build\patches\wh3-dlss5-d3d12-passthrough.patch" package\
           @"
-          OptiScaler WH3 + DLSS5 compatibility test build v4
+          OptiScaler WH3 + DLSS5 compatibility test build v5
           Base commit: 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
 
           Changes:
-          - Keeps ShortFuse's D3D12 DLSS feature on native NVIDIA NGX (v3 fix).
-          - For windowed XeFG swapchains, omits the fullscreen descriptor when calling XeFG,
-            matching Intel's XeFG sample pattern. This targets WH3's DXGI_INVALID_CALL during
-            DX11->DX12 XeFG swapchain creation.
+          - Keeps ShortFuse's D3D12 DLSS feature on native NVIDIA NGX.
+          - Keeps v4's windowed XeFG fullscreen-descriptor workaround.
+          - Logs the XeFG DXGI swapchain descriptor immediately before initialization.
+          - Clears DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING from the XeFG descriptor as a focused A/B test.
+
+          Rationale:
+          WH3's interop descriptor carries ALLOW_TEARING (0x800), while XeFG adds
+          FRAME_LATENCY_WAITABLE_OBJECT (0x40), producing Flags 0x840 at the failing
+          CreateSwapChainForHwnd call. Intel's XeFG sample does not carry ALLOW_TEARING.
 
           Test configuration:
           [Inputs]
@@ -140,14 +188,15 @@ jobs:
 
           FG Input: OptiFG (Upscaler)
           FG Output: XeFG
-          RTSS: off for this test
+          RTSS: off
+          NVIDIA Smooth Motion: off
 
-          This is an unsigned experimental build. Keep your previous working v3 backup.
+          This is an unsigned experimental build. Keep your previous working v4 backup.
           "@ | Set-Content -Encoding UTF8 package\README-WH3-DLSS5.txt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OptiScaler-WH3-DLSS5-compat-v4-5c5e424d
+          name: OptiScaler-WH3-DLSS5-compat-v5-5c5e424d
           path: package
           if-no-files-found: error
