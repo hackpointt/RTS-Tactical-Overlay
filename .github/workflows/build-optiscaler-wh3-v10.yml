@@ -1,0 +1,310 @@
+name: Build OptiScaler WH3 DLSS5 compat v10
+
+on:
+  push:
+    branches:
+      - optiscaler-wh3-dlss5-test
+    paths:
+      - '.github/workflows/build-optiscaler-wh3-v10.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Clone OptiScaler at tested commit
+        shell: powershell
+        run: |
+          git clone --recursive https://github.com/optiscaler/OptiScaler.git optiscaler-src
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location optiscaler-src
+          git checkout 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Apply WH3 DLSS5 native D3D12 passthrough
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          git apply --recount "${{ github.workspace }}\optiscaler-wh3-build\patches\wh3-dlss5-d3d12-passthrough.patch"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path "OptiScaler\inputs\NVNGX_DLSS_Dx12.cpp" -Pattern "WH3/DLSS5 compat v2" -SimpleMatch)) { exit 1 }
+
+      - name: Apply XeFG v4-v7 WH3 compatibility fixes
+        shell: powershell
+        run: |
+          $path = "optiscaler-src\OptiScaler\framegen\xefg\XeFG_Dx12.cpp"
+          $text = [System.IO.File]::ReadAllText($path)
+
+          $oldCall = @'
+              xefg_swapchain_result_t result;
+              result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, &fsDesc, realQueue, factory12,
+                                                               &params);
+          '@
+          $newCall = @'
+              xefg_swapchain_result_t result;
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC* xefgFullscreenDesc = desc->Windowed ? nullptr : &fsDesc;
+              if (desc->Windowed)
+                  LOG_INFO("WH3/XeFG compat v4: omitting fullscreen descriptor for windowed swapchain");
+
+              result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, xefgFullscreenDesc,
+                                                               realQueue, factory12, &params);
+          '@
+          if (-not $text.Contains($oldCall)) { Write-Error "v4 target block not found"; exit 1 }
+          $text = $text.Replace($oldCall, $newCall)
+
+          $oldDesc = @'
+              scDesc.Stereo = false; // No info
+              scDesc.SwapEffect = desc->SwapEffect;
+              scDesc.Width = desc->BufferDesc.Width;
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsDesc {};
+          '@
+          $newDesc = @'
+              scDesc.Stereo = false; // No info
+              scDesc.SwapEffect = desc->SwapEffect;
+              scDesc.Width = desc->BufferDesc.Width;
+
+              LOG_INFO("WH3/XeFG compat v7 descriptor before sanitize: Width {}, Height {}, Format {}, Count {}, Usage {:X}, Flags {:X}, Scaling {}, SwapEffect {}, SampleCount {}, SampleQuality {}, AlphaMode {}",
+                       scDesc.Width, scDesc.Height, (UINT) scDesc.Format, scDesc.BufferCount, (UINT) scDesc.BufferUsage,
+                       (UINT) scDesc.Flags, (UINT) scDesc.Scaling, (UINT) scDesc.SwapEffect,
+                       scDesc.SampleDesc.Count, scDesc.SampleDesc.Quality, (UINT) scDesc.AlphaMode);
+
+              if ((scDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0)
+                  LOG_INFO("WH3/XeFG compat v7: preserving DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; Flags {:X}", (UINT) scDesc.Flags);
+
+              if ((scDesc.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS) != 0)
+              {
+                  scDesc.BufferUsage &= ~DXGI_USAGE_UNORDERED_ACCESS;
+                  LOG_INFO("WH3/XeFG compat v6: cleared DXGI_USAGE_UNORDERED_ACCESS; Usage now {:X}", (UINT) scDesc.BufferUsage);
+              }
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsDesc {};
+          '@
+          if (-not $text.Contains($oldDesc)) { Write-Error "v7 descriptor target block not found"; exit 1 }
+          $text = $text.Replace($oldDesc, $newDesc)
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($path, $text, $utf8NoBom)
+
+          foreach ($marker in @("WH3/XeFG compat v4", "WH3/XeFG compat v6", "WH3/XeFG compat v7")) {
+            if (-not (Select-String -Path $path -Pattern $marker -SimpleMatch)) { Write-Error "Missing source marker: $marker"; exit 1 }
+          }
+
+      - name: Apply v10 native DLSS OptiFG bridge init fix
+        shell: powershell
+        run: |
+          $path = "optiscaler-src\OptiScaler\inputs\NVNGX_DLSS_Dx12.cpp"
+          $text = [System.IO.File]::ReadAllText($path)
+
+          $oldGlobals = @'
+          static wchar_t const** paths;
+          '@
+          $newGlobals = @'
+          static wchar_t const** paths;
+
+          // WH3 v10: metadata-only feature for feeding native ShortFuse/DLSS inputs into OptiFG.
+          // It never evaluates an upscaler; native NVIDIA NGX remains the sole DLSS evaluator.
+          class WH3NativeDlssInputFeature final : public IFeature_Dx12
+          {
+            public:
+              WH3NativeDlssInputFeature(unsigned int handleId, NVSDK_NGX_Parameter* params)
+                  : IFeature(handleId, params), IFeature_Dx12(handleId, params)
+              {
+                  _initParameters = SetInitParameters(params);
+                  SetInit(_initParameters);
+                  LOG_INFO("WH3/DLSS5 compat v10 shadow feature init: {}, IsInitParameters {}, Render {}x{}, Display {}x{}, Flags 0x{:X}, LowResMV {}, DepthInverted {}, JitteredMV {}",
+                           IsInited(), IsInitParameters(), RenderWidth(), RenderHeight(), DisplayWidth(), DisplayHeight(), GetFeatureFlags(),
+                           LowResMV(), DepthInverted(), JitteredMV());
+              }
+
+              bool InitInternal(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*) override { return true; }
+              bool EvaluateInternal(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*) override { return true; }
+              feature_version Version() override { return feature_version { 0, 0, 0 }; }
+              Upscaler GetUpscalerType() const final { return Upscaler::DLSS; }
+              bool IsWithDx12() override { return false; }
+              void AdvanceFrame() { _frameCount++; }
+          };
+
+          static std::unordered_map<unsigned int, std::unique_ptr<WH3NativeDlssInputFeature>> wh3NativeInputFeatures;
+          '@
+          if (-not $text.Contains($oldGlobals)) { Write-Error "v10 globals target not found"; exit 1 }
+          $text = $text.Replace($oldGlobals, $newGlobals)
+
+          $oldEval = @'
+              // Native DLSS passthrough
+              if (handleId < DLSS_MOD_ID_OFFSET)
+              {
+                  if (cfg.DLSSEnabled.value_or_default() && NVNGXProxy::D3D12_EvaluateFeature() != nullptr)
+                  {
+                      LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
+                      NVSDK_NGX_Result result =
+                          NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+                      LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
+                      return result;
+                  }
+          '@
+          $newEval = @'
+              // Native DLSS passthrough
+              if (handleId < DLSS_MOD_ID_OFFSET)
+              {
+                  if (cfg.DLSSEnabled.value_or_default() && NVNGXProxy::D3D12_EvaluateFeature() != nullptr)
+                  {
+                      WH3NativeDlssInputFeature* bridgeFeature = nullptr;
+                      const bool wh3NativeBridge =
+                          _wcsicmp(Util::ExePath().filename().wstring().c_str(), L"Warhammer3.exe") == 0 &&
+                          feature == NVSDK_NGX_Feature_SuperSampling && InParameters != nullptr &&
+                          State::Instance().activeFgInput == FGInput::Upscaler;
+
+                      if (wh3NativeBridge)
+                      {
+                          auto it = wh3NativeInputFeatures.find(handleId);
+                          if (it == wh3NativeInputFeatures.end())
+                          {
+                              auto shadow = std::make_unique<WH3NativeDlssInputFeature>(handleId, InParameters);
+                              bridgeFeature = shadow.get();
+                              wh3NativeInputFeatures.emplace(handleId, std::move(shadow));
+                              LOG_INFO("WH3/DLSS5 compat v10 bridge created for native handle {}", handleId);
+                          }
+                          else
+                          {
+                              bridgeFeature = it->second.get();
+                          }
+
+                          if (bridgeFeature != nullptr && bridgeFeature->IsInitParameters())
+                          {
+                              State::Instance().currentFeature = bridgeFeature;
+
+                              // Reuse OptiScaler's normal upscaler-input path. This tags native DLSS Depth/MV
+                              // resources for XeFG while leaving the native DLSS evaluator untouched.
+                              UpscalerInputsDx12::UpscaleStart(InCmdList, InParameters, bridgeFeature);
+                              UpscalerInputsDx12::UpscaleEnd(InCmdList, InParameters, bridgeFeature);
+
+                              static uint64_t wh3BridgeCounter = 0;
+                              wh3BridgeCounter++;
+                              if (wh3BridgeCounter <= 12 || (wh3BridgeCounter % 300) == 0)
+                              {
+                                  auto fg = State::Instance().currentFG;
+                                  LOG_INFO("WH3/DLSS5 compat v10 bridge tick #{}: FGEnabled {}, fg {}, active {}, paused {}, depth {}, velocity {}, frame {}",
+                                           wh3BridgeCounter, Config::Instance()->FGEnabled.value_or_default(), fg != nullptr,
+                                           fg != nullptr ? fg->IsActive() : false,
+                                           fg != nullptr ? fg->IsPaused() : false,
+                                           fg != nullptr ? fg->HasResource(FG_ResourceType::Depth) : false,
+                                           fg != nullptr ? fg->HasResource(FG_ResourceType::Velocity) : false,
+                                           fg != nullptr ? fg->FrameCount() : 0);
+                              }
+                          }
+                          else
+                          {
+                              LOG_ERROR("WH3/DLSS5 compat v10 bridge blocked: shadow feature missing init parameters");
+                          }
+                      }
+
+                      LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
+                      NVSDK_NGX_Result result =
+                          NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+                      LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
+
+                      if (bridgeFeature != nullptr)
+                          bridgeFeature->AdvanceFrame();
+
+                      return result;
+                  }
+          '@
+          if (-not $text.Contains($oldEval)) { Write-Error "v10 native Evaluate target block not found"; exit 1 }
+          $text = $text.Replace($oldEval, $newEval)
+
+          $oldRelease = @'
+              // OptiScaler handles start after this offset. If it's outside this range, it doesn't belong to OptiScaler.
+              if (handleId < DLSS_MOD_ID_OFFSET)
+              {
+                  if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::D3D12_ReleaseFeature() != nullptr)
+          '@
+          $newRelease = @'
+              // OptiScaler handles start after this offset. If it's outside this range, it doesn't belong to OptiScaler.
+              if (handleId < DLSS_MOD_ID_OFFSET)
+              {
+                  auto bridgeIt = wh3NativeInputFeatures.find(handleId);
+                  if (bridgeIt != wh3NativeInputFeatures.end())
+                  {
+                      if (State::Instance().currentFeature == bridgeIt->second.get())
+                          State::Instance().currentFeature = nullptr;
+                      wh3NativeInputFeatures.erase(bridgeIt);
+                      LOG_INFO("WH3/DLSS5 compat v10 bridge released for native handle {}", handleId);
+                  }
+
+                  if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::D3D12_ReleaseFeature() != nullptr)
+          '@
+          if (-not $text.Contains($oldRelease)) { Write-Error "v10 release target block not found"; exit 1 }
+          $text = $text.Replace($oldRelease, $newRelease)
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($path, $text, $utf8NoBom)
+
+          foreach ($marker in @("WH3/DLSS5 compat v10 shadow feature init", "WH3/DLSS5 compat v10 bridge created", "WH3/DLSS5 compat v10 bridge tick")) {
+            if (-not (Select-String -Path $path -Pattern $marker -SimpleMatch)) { Write-Error "Missing v10 source marker: $marker"; exit 1 }
+          }
+
+          Set-Location optiscaler-src
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          msbuild /m /p:Configuration=Release . /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify compiled DLL contains v2-v10 markers
+        shell: powershell
+        run: |
+          $dll = "optiscaler-src\x64\Release\a\OptiScaler.dll"
+          if (-not (Test-Path $dll)) { Write-Error "Compiled DLL missing"; exit 1 }
+          $ascii = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dll))
+          foreach ($marker in @("WH3/DLSS5 compat v2", "WH3/XeFG compat v4", "WH3/XeFG compat v6", "WH3/XeFG compat v7", "WH3/DLSS5 compat v10 shadow feature init", "WH3/DLSS5 compat v10 bridge tick")) {
+            if (-not $ascii.Contains($marker)) { Write-Error "Missing marker: $marker"; exit 1 }
+          }
+
+      - name: Stage artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item -Recurse -Force "optiscaler-src\x64\Release\a\*" package\
+          @"
+          OptiScaler WH3 + DLSS5 compatibility test build v10
+          Base commit: 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
+
+          Keeps:
+          - native D3D12 DLSS5 passthrough
+          - v4 windowed fullscreen-desc workaround
+          - v6 removal of DXGI_USAGE_UNORDERED_ACCESS
+          - v7 preservation of ALLOW_TEARING
+
+          New in v10:
+          - fixes v9 shadow-feature initialization by persisting SetInitParameters into _initParameters
+          - feeds native ShortFuse/DLSS Depth/MotionVector inputs into OptiFG's normal upscaler-input path
+          - native NVIDIA DLSS EvaluateFeature remains untouched
+          - bridge logs report FGEnabled/active/paused/depth/velocity state
+
+          This is the first corrected bridge build intended to let XeFG activate.
+          Keep RTSS and NVIDIA Smooth Motion off. Test 2560x1440 windowed first.
+          "@ | Set-Content -Encoding UTF8 package\README-WH3-DLSS5.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-WH3-DLSS5-compat-v10-5c5e424d
+          path: package
+          if-no-files-found: error
