@@ -1,0 +1,71 @@
+name: Build OptiScaler WH3 DLSS5 compat
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Clone OptiScaler at tested commit
+        shell: powershell
+        run: |
+          git clone --recursive https://github.com/optiscaler/OptiScaler.git optiscaler-src
+          Set-Location optiscaler-src
+          git checkout 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
+          git submodule update --init --recursive
+
+      - name: Apply WH3/DLSS5 patch
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          git apply "${{ github.workspace }}\optiscaler-wh3-build\patches\wh3-dlss5-d3d12-passthrough.patch"
+          git diff --check
+          git diff
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          msbuild /m /p:Configuration=Release . /verbosity:minimal
+
+      - name: Stage artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item -Recurse -Force "optiscaler-src\x64\Release\a\*" package\
+          Copy-Item "optiscaler-wh3-build\patches\wh3-dlss5-d3d12-passthrough.patch" package\
+          @"
+          OptiScaler WH3 + DLSS5 compatibility test build
+          Base commit: 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
+
+          Patch behavior:
+          - Keeps D3D11 DLSS interception enabled for Warhammer3.exe.
+          - Passes D3D12 DLSS SuperSampling/RayReconstruction through to native NGX in Warhammer3.exe.
+          - Intended to avoid intercepting ShortFuse dlss5-feed's auxiliary D3D12 DLSS feature.
+
+          Test configuration:
+          [Inputs]
+          EnableDlssInputs=true
+
+          FG Input: OptiFG (Upscaler)
+          FG Output: XeFG
+
+          This is an unsigned experimental build. Keep your original RHI-installed OptiScaler backup.
+          "@ | Set-Content -Encoding UTF8 package\README-WH3-DLSS5.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-WH3-DLSS5-compat-5c5e424d
+          path: package
+          if-no-files-found: error
