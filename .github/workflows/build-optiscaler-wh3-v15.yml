@@ -1,0 +1,237 @@
+name: Build OptiScaler WH3 DLSS5 compat v15
+
+on:
+  push:
+    branches:
+      - optiscaler-wh3-dlss5-test
+    paths:
+      - '.github/workflows/build-optiscaler-wh3-v15.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Reuse tested v14 source transforms
+        shell: powershell
+        run: |
+          python -m pip install pyyaml --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          @'
+          import os, pathlib, yaml
+          wf = pathlib.Path('.github/workflows/build-optiscaler-wh3-v14.yml')
+          data = yaml.safe_load(wf.read_text(encoding='utf-8'))
+          wanted = [
+              'Reuse tested v13 source transforms',
+              'Apply v14 live status instrumentation',
+          ]
+          steps = {s.get('name'): s for s in data['jobs']['build']['steps'] if isinstance(s, dict)}
+          ws = os.environ['GITHUB_WORKSPACE']
+          out = pathlib.Path('.v15-reuse')
+          out.mkdir(exist_ok=True)
+          for i, name in enumerate(wanted):
+              script = steps[name]['run'].replace('${{ github.workspace }}', ws)
+              (out / f'{i:02d}.ps1').write_text(script, encoding='utf-8')
+          '@ | Set-Content -Encoding UTF8 .v15_extract.py
+
+          python .v15_extract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Get-ChildItem .v15-reuse\*.ps1 | Sort-Object Name | ForEach-Object {
+            Write-Host "Running reused transform: $($_.Name)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Converge WH3 compatibility source
+        shell: powershell
+        run: |
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+          # Scope the XeFG descriptor workarounds to Warhammer3.exe and remove experiment-version labels.
+          $xePath = "optiscaler-src\OptiScaler\framegen\xefg\XeFG_Dx12.cpp"
+          $xe = [System.IO.File]::ReadAllText($xePath)
+
+          $oldDesc = @'
+              LOG_INFO("WH3/XeFG compat v7 descriptor before sanitize: Width {}, Height {}, Format {}, Count {}, Usage {:X}, Flags {:X}, Scaling {}, SwapEffect {}, SampleCount {}, SampleQuality {}, AlphaMode {}",
+                       scDesc.Width, scDesc.Height, (UINT) scDesc.Format, scDesc.BufferCount, (UINT) scDesc.BufferUsage,
+                       (UINT) scDesc.Flags, (UINT) scDesc.Scaling, (UINT) scDesc.SwapEffect,
+                       scDesc.SampleDesc.Count, scDesc.SampleDesc.Quality, (UINT) scDesc.AlphaMode);
+
+              if ((scDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0)
+                  LOG_INFO("WH3/XeFG compat v7: preserving DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; Flags {:X}", (UINT) scDesc.Flags);
+
+              if ((scDesc.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS) != 0)
+              {
+                  scDesc.BufferUsage &= ~DXGI_USAGE_UNORDERED_ACCESS;
+                  LOG_INFO("WH3/XeFG compat v6: cleared DXGI_USAGE_UNORDERED_ACCESS; Usage now {:X}", (UINT) scDesc.BufferUsage);
+              }
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsDesc {};
+          '@
+          $newDesc = @'
+              // Warhammer III's DX11 swapchain requests UNORDERED_ACCESS. XeFG rejects that usage
+              // when OptiScaler converts the chain to the DX12 FG presenter, so sanitize only WH3.
+              const bool wh3XeFgCompat = _stricmp(State::Instance().gameExe.c_str(), "Warhammer3.exe") == 0;
+              if (wh3XeFgCompat)
+              {
+                  LOG_INFO("WH3 XeFG compatibility: Width {}, Height {}, Format {}, Count {}, Usage {:X}, Flags {:X}, Scaling {}, SwapEffect {}, SampleCount {}, SampleQuality {}, AlphaMode {}",
+                           scDesc.Width, scDesc.Height, (UINT) scDesc.Format, scDesc.BufferCount, (UINT) scDesc.BufferUsage,
+                           (UINT) scDesc.Flags, (UINT) scDesc.Scaling, (UINT) scDesc.SwapEffect,
+                           scDesc.SampleDesc.Count, scDesc.SampleDesc.Quality, (UINT) scDesc.AlphaMode);
+
+                  if ((scDesc.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS) != 0)
+                  {
+                      scDesc.BufferUsage &= ~DXGI_USAGE_UNORDERED_ACCESS;
+                      LOG_INFO("WH3 XeFG compatibility: removed DXGI_USAGE_UNORDERED_ACCESS; Usage now {:X}",
+                               (UINT) scDesc.BufferUsage);
+                  }
+              }
+
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsDesc {};
+          '@
+          if (-not $xe.Contains($oldDesc)) { Write-Error "v15 XeFG descriptor block not found"; exit 1 }
+          $xe = $xe.Replace($oldDesc, $newDesc)
+
+          $oldCall = @'
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC* xefgFullscreenDesc = desc->Windowed ? nullptr : &fsDesc;
+              if (desc->Windowed)
+                  LOG_INFO("WH3/XeFG compat v4: omitting fullscreen descriptor for windowed swapchain");
+
+              result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, xefgFullscreenDesc,
+                                                               realQueue, factory12, &params);
+          '@
+          $newCall = @'
+              // Intel's windowed XeFG path expects no fullscreen descriptor. Keep the workaround scoped
+              // to WH3 so unrelated games retain upstream OptiScaler behavior.
+              DXGI_SWAP_CHAIN_FULLSCREEN_DESC* xefgFullscreenDesc =
+                  (wh3XeFgCompat && desc->Windowed) ? nullptr : &fsDesc;
+              if (wh3XeFgCompat && desc->Windowed)
+                  LOG_INFO("WH3 XeFG compatibility: omitting fullscreen descriptor for windowed swapchain");
+
+              result = XeFGProxy::D3D12InitFromSwapChainDesc()(_swapChainContext, hwnd, &scDesc, xefgFullscreenDesc,
+                                                               realQueue, factory12, &params);
+          '@
+          if (-not $xe.Contains($oldCall)) { Write-Error "v15 XeFG init block not found"; exit 1 }
+          $xe = $xe.Replace($oldCall, $newCall)
+          [System.IO.File]::WriteAllText($xePath, $xe, $utf8NoBom)
+
+          # Normalize bridge log labels; this is intentionally behavior-neutral.
+          $ngxPath = "optiscaler-src\OptiScaler\inputs\NVNGX_DLSS_Dx12.cpp"
+          $ngx = [System.IO.File]::ReadAllText($ngxPath)
+          $replacements = @{
+              'WH3/DLSS5 compat v2:' = 'WH3 native DLSS passthrough:'
+              'WH3/DLSS5 compat v12 shadow feature init:' = 'WH3 native DLSS bridge: shadow init:'
+              'WH3/DLSS5 compat v12 bridge created' = 'WH3 native DLSS bridge: created'
+              'WH3/DLSS5 compat v12 bridge dormant:' = 'WH3 native DLSS bridge: dormant:'
+              'WH3/DLSS5 compat v12 bridge tick' = 'WH3 native DLSS bridge: tick'
+              'WH3/DLSS5 compat v12 bridge blocked:' = 'WH3 native DLSS bridge: blocked:'
+              'WH3/DLSS5 compat v12 bridge released' = 'WH3 native DLSS bridge: released'
+              'WH3/DLSS5 compat v13: shadow kept private; currentFeature untouched while FG bridge runs' = 'WH3 native DLSS bridge: private shadow active; currentFeature untouched'
+          }
+          foreach ($key in $replacements.Keys) { $ngx = $ngx.Replace($key, $replacements[$key]) }
+          [System.IO.File]::WriteAllText($ngxPath, $ngx, $utf8NoBom)
+
+          Set-Location optiscaler-src
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $changed = @(git diff --name-only)
+          $expected = @(
+            'OptiScaler/State.h',
+            'OptiScaler/framegen/xefg/XeFG_Dx12.cpp',
+            'OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp',
+            'OptiScaler/menu/menu_common.cpp'
+          )
+          $unexpected = @($changed | Where-Object { $_ -notin $expected })
+          if ($unexpected.Count -gt 0) {
+            Write-Error "Unexpected modified files: $($unexpected -join ', ')"; exit 1
+          }
+          foreach ($p in $expected) {
+            if ($p -notin $changed) { Write-Error "Expected modified file missing: $p"; exit 1 }
+          }
+
+      - name: Export consolidated patch
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          git diff --binary HEAD | Out-File -Encoding utf8 "${{ github.workspace }}\WH3-native-DLSS5-XeFG.patch"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path "${{ github.workspace }}\WH3-native-DLSS5-XeFG.patch" -Pattern "WH3 native DLSS bridge" -SimpleMatch)) { exit 1 }
+          if (-not (Select-String -Path "${{ github.workspace }}\WH3-native-DLSS5-XeFG.patch" -Pattern "WH3 XeFG compatibility" -SimpleMatch)) { exit 1 }
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        shell: powershell
+        run: |
+          Set-Location optiscaler-src
+          msbuild /m /p:Configuration=Release . /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify converged DLL
+        shell: powershell
+        run: |
+          $dll = "optiscaler-src\x64\Release\a\OptiScaler.dll"
+          if (-not (Test-Path $dll)) { Write-Error "Compiled DLL missing"; exit 1 }
+          $ascii = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dll))
+          foreach ($marker in @(
+            "WH3 native DLSS passthrough:",
+            "WH3 native DLSS bridge: shadow init:",
+            "WH3 native DLSS bridge: private shadow active",
+            "WH3 XeFG compatibility:",
+            "WH3 native DLSS5 -> XeFG bridge",
+            "Native DLSS NGX:"
+          )) {
+            if (-not $ascii.Contains($marker)) { Write-Error "Missing converged marker: $marker"; exit 1 }
+          }
+          foreach ($obsolete in @("WH3/DLSS5 compat v2", "WH3/XeFG compat v4", "WH3/XeFG compat v6", "WH3/XeFG compat v7", "WH3/DLSS5 compat v12", "WH3/DLSS5 compat v13")) {
+            if ($ascii.Contains($obsolete)) { Write-Error "Obsolete experiment marker still present: $obsolete"; exit 1 }
+          }
+
+      - name: Stage artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item -Recurse -Force "optiscaler-src\x64\Release\a\*" package\
+          Copy-Item -Force "WH3-native-DLSS5-XeFG.patch" package\
+          @"
+          OptiScaler WH3 native DLSS5 -> XeFG compatibility candidate v15
+          Base OptiScaler commit: 5c5e424dd137d69ef36c4231fd45b760b4c65cc8
+
+          Validated architecture carried forward from v14:
+          - ShortFuse dlss5-feed.addon64 remains the native DLSS producer
+          - native NVIDIA D3D12 NGX SuperSampling Create/Evaluate remains passthrough
+          - a private metadata-only shadow feature feeds native DLSS Depth/MV to OptiFG
+          - the shadow is never published as State::currentFeature
+          - XeFG uses the DX11->DX12 interop presenter
+          - WH3 XeFG swapchain removes DXGI_USAGE_UNORDERED_ACCESS
+          - WH3 windowed XeFG init omits the fullscreen descriptor
+          - ALLOW_TEARING is preserved
+          - live menu status reports feeder/native DLSS/Depth+MV/XeFG
+
+          V15 convergence changes:
+          - scopes XeFG descriptor workarounds to Warhammer3.exe only
+          - removes experiment-version labels from runtime logs
+          - verifies exactly four upstream source files are modified
+          - includes WH3-native-DLSS5-XeFG.patch as a single reviewable patch
+
+          Known limitation:
+          - ReShade/ShortFuse overlay may not be visible after XeFG owns final Present;
+            the ShortFuse addon itself remains loaded and the OptiScaler status panel reports live native DLSS activity.
+          "@ | Set-Content -Encoding UTF8 package\README-WH3-DLSS5.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-WH3-DLSS5-compat-v15-5c5e424d
+          path: package
+          if-no-files-found: error
